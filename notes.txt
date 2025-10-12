@@ -4,6 +4,14 @@ do all drawing myself in SDL_RenderPresent
 
 -----------------------------------------------
 
+I think I need some hook to make sure that saving 
+is finished before quitting?
+
+loading a game continues to run the current game
+for a few more frames
+
+-----------------------------------------------
+
 Look up program function (eg. Drastic's quit)
 
 	nm ./drastic | grep quit

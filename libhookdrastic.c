@@ -5,6 +5,7 @@
 #include <link.h>
 #include <sys/mman.h>
 #include <setjmp.h>
+#include <dirent.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,10 +14,17 @@
 
 // --------------------------------------------
 
+
 #define SDCARD_PATH		"/mnt/SDCARD"
 #define GAMES_PATH 		SDCARD_PATH "/games"
 #define DRASTIC_PATH 	SDCARD_PATH "/drastic"
 #define HOOK_PATH		DRASTIC_PATH "/hook"
+
+#define FONT_SCALE 2
+
+#define MAX_LINE 1024
+#define MAX_PATH 512
+#define MAX_FILE 256
 
 // --------------------------------------------
 
@@ -47,78 +55,108 @@
 static struct {
 	uintptr_t base;
 	
+	SDL_Window* window;
 	SDL_Renderer* renderer;
-	int w;
-	int h;
-	
 	SDL_Texture* top;
 	SDL_Texture* bottom;
-} ctx = {
+	TTF_Font* font;
+	
+	int w; // TODO: rename?
+	int h; // TODO: rename?
+	
+	int count;
+	int current;
+	int capacity;
+	char** items;
+	
+	char game_path[MAX_PATH];
+	char game_name[MAX_FILE];
+} app = {
 	.w=256,
 	.h=384,
 };
-
-// TODO: move to settings (or ctx for now)?
-// both change renderer logical size
-static int cropped = 1;
-static int gapped = 1;
 
 // --------------------------------------------
 // settings
 // --------------------------------------------
 
-static int volume = 6; // 0-20
-static const uint8_t volume_raw[21] = {
-	  0, // mute
-	120, // 0
-	131, // 11
-	138, // 7
-	143, // 5
-	147, // 4
-	151, // 4
-	154, // 3
-	157, // 3
-	160, // 3
-	162, // 2
-	164, // 2
-	166, // 2
-	168, // 2
-	170, // 2
-	172, // 2
-	174, // 2
-	176, // 2
-	178, // 2
-	179, // 2
-	180, // 1
+static struct {
+	int version;
+	int volume;		// 0-20
+	int brightness;	// 0 - 10
+	int cropped;
+	int gapped;
+	char game[MAX_PATH];
+} settings = {
+	.version = 1,
+	.volume = 6,
+	.brightness = 3,
+	.cropped = 1,
+	.gapped = 1,
 };
-static void set_volume(int value) {
-	volume = value;
-	char cmd[256];
-	sprintf(cmd, "vol %i", volume_raw[value]);
-	printf("volume\n");
-	system(cmd);
-}
 
-static int brightness = 3; // 0 - 10
-static const uint8_t brightness_raw[11] = {
-	  1, // 0
-	  8, // 8
-	 16, // 8
-	 32, // 16
-	 48, // 16
-	 72, // 24
-	 96, // 24
-	128, // 32
-	160, // 32
-	192, // 32
-	255, // 64
-};
-static void set_brightness(int value) {
-	brightness = value;
+#define SETTINGS_PATH HOOK_PATH "/settings.bin"
+static void Settings_load(void) {
+	if (access(SETTINGS_PATH, F_OK)!=0) return;
+	
+	FILE* file = fopen(SETTINGS_PATH, "rb");
+	if (!file) return;
+	fread(&settings, sizeof(settings), 1, file);
+	fclose(file);
+}
+static void Settings_save(void) {
+	FILE* file = fopen(SETTINGS_PATH, "wb");
+	if (!file) return;
+	fwrite(&settings, sizeof(settings), 1, file);
+	fclose(file);
+}
+static void Settings_setVolume(int value) {
 	char cmd[256];
-	sprintf(cmd, "bl %i", brightness_raw[value]);
-	printf("brightness\n");
+	static const uint8_t volume_raw[21] = {
+		  0, // mute
+		120, // 0
+		131, // 11
+		138, // 7
+		143, // 5
+		147, // 4
+		151, // 4
+		154, // 3
+		157, // 3
+		160, // 3
+		162, // 2
+		164, // 2
+		166, // 2
+		168, // 2
+		170, // 2
+		172, // 2
+		174, // 2
+		176, // 2
+		178, // 2
+		179, // 2
+		180, // 1
+	};
+	sprintf(cmd, "vol %i", volume_raw[value]);
 	system(cmd);
+	settings.volume = value;
+}
+static void Settings_setBrightness(int value) {
+	char cmd[256];
+	static const uint8_t brightness_raw[11] = {
+		  1, // 0
+		  8, // 8
+		 16, // 8
+		 32, // 16
+		 48, // 16
+		 72, // 24
+		 96, // 24
+		128, // 32
+		160, // 32
+		192, // 32
+		255, // 64
+	};
+	sprintf(cmd, "bl %i", brightness_raw[value]);
+	system(cmd);
+	settings.brightness = value;
 }
 
 // --------------------------------------------
@@ -126,15 +164,16 @@ static void set_brightness(int value) {
 // --------------------------------------------
 
 static int  (*real_SDL_Init)(Uint32) = NULL;
-static int  (*real_SDL_PollEvent)(SDL_Event*) = NULL;
+static SDL_Window* (*real_SDL_CreateWindow)(const char*, int, int, int, int, Uint32) = NULL;
+static void (*real_SDL_SetWindowSize)(SDL_Window *, int, int) = NULL;
 static int  (*real_SDL_RenderSetLogicalSize)(SDL_Renderer*, int, int) = NULL;
-static int  (*real_SDL_RenderCopy)(SDL_Renderer*, SDL_Texture*, const SDL_Rect*, const SDL_Rect*) = NULL;
 static SDL_Renderer* (*real_SDL_CreateRenderer)(SDL_Window*, int, Uint32) = NULL;
-static int  (*real_SDL_UpdateTexture)(SDL_Texture*, const SDL_Rect*, const void*, int) = NULL;
+static void (*real_SDL_RenderPresent)(SDL_Renderer*) = NULL;
 static SDL_Texture* (*real_SDL_CreateTexture)(SDL_Renderer*, Uint32, int, int, int) = NULL;
 static void (*real_SDL_DestroyTexture)(SDL_Texture *) = NULL;
-static void (*real_SDL_RenderPresent)(SDL_Renderer*) = NULL;
+static int  (*real_SDL_RenderCopy)(SDL_Renderer*, SDL_Texture*, const SDL_Rect*, const SDL_Rect*) = NULL;
 static int (*real_SDL_OpenAudio)(SDL_AudioSpec *desired, SDL_AudioSpec *obtained) = NULL;
+static int  (*real_SDL_PollEvent)(SDL_Event*) = NULL;
 
 static int (*real__libc_start_main)(int (*main)(int,char**,char**), int argc, char **ubp_av, void (*init)(void), void (*fini)(void), void (*rtld_fini)(void), void *stack_end) = NULL;
 static void (*real_exit)(int) __attribute__((noreturn)) = NULL;
@@ -300,11 +339,11 @@ typedef uint8_t (*drastic_audio_pause_t)(void *);
 typedef void (*drastic_audio_unpause_t)(void *);
 
 static inline void* drastic_var_system(void) {
-	return PTR_AT(ctx.base + 0x15ff30); // follow arg in Cutter
+	return PTR_AT(app.base + 0x15ff30); // follow arg in Cutter
 }
 static void drastic_load_nds_and_jump(const char* path) {
-	drastic_load_nds_t d_load_nds = GET_PFN(ctx.base + 0x0006fd30); // nm ./drastic | grep load_nds
-	drastic_reset_system_t d_reset_system = GET_PFN(ctx.base + 0x0000fd50); // nm ./drastic | grep reset_system
+	drastic_load_nds_t d_load_nds = GET_PFN(app.base + 0x0006fd30); // nm ./drastic | grep load_nds
+	drastic_reset_system_t d_reset_system = GET_PFN(app.base + 0x0000fd50); // nm ./drastic | grep reset_system
 	
 	void* sys = drastic_var_system();
 	d_load_nds((uint8_t *)sys + 800, path);
@@ -313,28 +352,23 @@ static void drastic_load_nds_and_jump(const char* path) {
 	jmp_buf *env = (jmp_buf *)((uint8_t *)sys + 0x3b2a840); // from main in Cutter
 	longjmp(*env, 1); // no return
 }
-static void drastic_quit(void) {
-	drastic_quit_t d_quit = GET_PFN(ctx.base + 0x0000e8d0); // nm ./drastic | grep quit
-	void* sys = drastic_var_system();	
-	d_quit(sys);
-}
 static void drastic_load_state(int slot) {
-	drastic_load_state_t d_load_state = GET_PFN(ctx.base + 0x000746f0); // nm ./drastic | grep load_state
-	
-	char* path = DRASTIC_PATH "/savestates/nsmb_2.dss"; // TODO: create this dynamically
-
 	void* sys = drastic_var_system();	
+	drastic_load_state_t d_load_state = GET_PFN(app.base + 0x000746f0); // nm ./drastic | grep load_state
+	
+	char path[MAX_PATH];
+	sprintf(path, DRASTIC_PATH "/savestates/%s_%i.dss", app.game_name, slot);
+
 	d_load_state(sys, path, NULL,NULL,0);
 }
 static void drastic_save_state(int slot) {
-	drastic_save_state_t d_save_state = GET_PFN(ctx.base + 0x00074da0); // nm ./drastic | grep save_state
-	
-	// TODO: create these dynamically
-	char* path = DRASTIC_PATH "/savestates/";
-	char* name = "nsmb_2.dss";
-	
 	void* sys = drastic_var_system();	
-	d_save_state(sys, path, name, NULL,NULL);
+	drastic_save_state_t d_save_state = GET_PFN(app.base + 0x00074da0); // nm ./drastic | grep save_state
+	
+	char name[MAX_FILE];
+	sprintf(name, "%s_%i.dss", app.game_name, slot);
+	
+	d_save_state(sys, DRASTIC_PATH "/savestates/", name, NULL,NULL);
 }
 static void drastic_audio_pause(int flag) {
 	// not sure this is necessary but
@@ -343,13 +377,18 @@ static void drastic_audio_pause(int flag) {
 	void* audio = (uint8_t *)sys + 0x1587000;
 	
 	if (flag) {
-		drastic_audio_pause_t drastic_audio_pause = GET_PFN(ctx.base + 0x0008caa0);
+		drastic_audio_pause_t drastic_audio_pause = GET_PFN(app.base + 0x0008caa0);
 		drastic_audio_pause(audio);
 	}
 	else {
-		drastic_audio_unpause_t drastic_audio_unpause = GET_PFN(ctx.base + 0x0008caf0);
+		drastic_audio_unpause_t drastic_audio_unpause = GET_PFN(app.base + 0x0008caf0);
 		drastic_audio_unpause(audio);
 	}
+}
+static void drastic_quit(void) {
+	drastic_quit_t d_quit = GET_PFN(app.base + 0x0000e8d0); // nm ./drastic | grep quit
+	void* sys = drastic_var_system();	
+	d_quit(sys);
 }
 
 // --------------------------------------------
@@ -380,20 +419,22 @@ static void save_texture_screenshot(SDL_Texture* texture, const char *path) {
 // this is required to handle timing issues with drastic
 // I wonder if the timing varies with rom size...yes
 static int loaded = 1;
-static int defer = 30; // TODO: varies by title/file size
+static int defer = 30;
 static int resume = 1;
+static int reset = 0;
 static int preload_game(void) {
+	drastic_audio_pause(0);
 	loaded = 0;
-	defer = 30; // TODO: varies by title/file size
+	defer = 30;
 	resume = 0;
 }
 static int preloading_game(void) {
 	if (!loaded && !defer) {
 		loaded = 1;
-		resume = 1;
-		defer = 10; // TODO: varies by title/file size, steward uses 15 ticks
-		drastic_load_nds_and_jump(GAMES_PATH "/nsmb.nds");
-		// drastic_load_nds_and_jump(GAMES_PATH "/nnk.nds");
+		resume = !reset;
+		reset = 0;
+		defer = resume ? 10 : 0;
+		drastic_load_nds_and_jump(app.game_path);
 		return 1; // never returns because the above jumps
 	}
 	
@@ -419,6 +460,7 @@ static int Device_handleEvent(SDL_Event* event) {
 	static int menu_combo = 0;
 	if (event->type==SDL_KEYDOWN) {
 		if (event->key.keysym.scancode==SCAN_POWER) {
+			unlink("/tmp/exec_loop");
 			drastic_quit();
 			return 1; // handled
 		}
@@ -431,30 +473,30 @@ static int Device_handleEvent(SDL_Event* event) {
 		
 		if (event->jbutton.button==JOY_VOLUP) {
 			if (menu_down) {
-				if (brightness<10) {
-					set_brightness(brightness+1);
+				if (settings.brightness<10) {
+					Settings_setBrightness(settings.brightness+1);
 					menu_combo = 1;
 					return 1;
 				}
 			}
 			else {
-				if (volume<20) {
-					set_volume(volume+1);
+				if (settings.volume<20) {
+					Settings_setVolume(settings.volume+1);
 					return 1;
 				}
 			}
 		}
 		else if (event->jbutton.button==JOY_VOLDN) {
 			if (menu_down) {
-				if (brightness>0) {
-					set_brightness(brightness-1);
+				if (settings.brightness>0) {
+					Settings_setBrightness(settings.brightness-1);
 					menu_combo = 1;
 					return 1;
 				}
 			}
 			else {
-				if (volume>0) {
-					set_volume(volume-1);
+				if (settings.volume>0) {
+					Settings_setVolume(settings.volume-1);
 					return 1;
 				}
 			}
@@ -469,34 +511,129 @@ static int Device_handleEvent(SDL_Event* event) {
 	return 0;
 }
 
-#define FONT_SCALE 2
-static TTF_Font* font;
-static void Menu_init(void) {
-	SDL_Log("Menu_init");
+static void App_getDisplayName(const char* in_name, char* out_name) {
+	char* tmp;
+	char work_name[MAX_FILE];
+	strcpy(work_name, in_name);
+	strcpy(out_name, in_name);
 	
-	// called immediately 
-	// TODO:
-	// load games directory listing
-	// figure out which game we're reloading (or first)
-	// setup rom_path, rom_name, rom_slot globals
+	// extract just the filename if necessary
+	tmp = strrchr(work_name, '/');
+	if (tmp) strcpy(out_name, tmp+1);
+	
+	// remove extension(s), eg. .p8.png
+	while ((tmp = strrchr(out_name, '.'))!=NULL) {
+		int len = strlen(tmp);
+		if (len>2 && len<=5) tmp[0] = '\0'; // 1-4 letter extension plus dot (was 1-3, extended for .doom files)
+		else break;
+	}
+	
+	// remove trailing parens (round and square)
+	strcpy(work_name, out_name);
+	while ((tmp=strrchr(out_name, '('))!=NULL || (tmp=strrchr(out_name, '['))!=NULL) {
+		if (tmp==out_name) break;
+		tmp[0] = '\0';
+		tmp = out_name;
+	}
+	
+	// make sure we haven't nuked the entire name
+	if (out_name[0]=='\0') strcpy(out_name, work_name);
+	
+	// remove trailing whitespace
+	tmp = out_name + strlen(out_name) - 1;
+    while(tmp>out_name && isspace((unsigned char)*tmp)) tmp--;
+    tmp[1] = '\0';
+}
+static int App_sort(const void* a, const void* b) {
+    const char* i = *(const char**)a;
+    const char* j = *(const char**)b;
+    return strcasecmp(i, j);
+}
+static void App_set(int i) {
+	if (i>=app.count) i -= app.count;
+	if (i<0) i += app.count;
+	app.current = i;
+	
+	strcpy(settings.game, app.items[app.current]);
+	
+	static char game_path[MAX_PATH];
+	sprintf(game_path, "%s/%s", GAMES_PATH, settings.game);
+	strcpy(app.game_path, game_path);
+	
+	strcpy(app.game_name, settings.game);
+	char *dot = strrchr(app.game_name, '.');
+	if (dot && dot!=app.game_name) *dot = '\0';
+}
+static void App_next(void) {
+	App_set(app.current+1);
+}
+static void App_prev(void) {
+	App_set(app.current-1);
+}
+
+static void App_init(void) {
+	Settings_load();
+	
+	// get games
+	DIR* dir = opendir(GAMES_PATH);
+	if (dir) {
+		app.count = 0;
+		app.current = 0;
+		app.capacity = 16;
+		app.items = malloc(sizeof(char*) * app.capacity);
+		
+		struct dirent* entry;
+		while ((entry=readdir(dir))!=NULL) {
+			if (entry->d_name[0]=='.') continue;
+			
+			if (app.count>=app.capacity) {
+				app.capacity *= 2;
+				app.items = realloc(app.items, sizeof(char*) * app.capacity);
+			}
+			app.items[app.count++] = strdup(entry->d_name);
+		}
+		closedir(dir);
+		
+		qsort(app.items, app.count, sizeof(char*), App_sort);
+	}
+	
+	// get index of last played game
+	if (*settings.game) {
+		for (int i=0; i<app.count; i++) {
+		    if (strcmp(app.items[i], settings.game)==0) {
+				app.current = i;
+		        break;
+		    }
+		}
+	}
+	
+	App_set(app.current);
 	
 	TTF_Init();
-	font = TTF_OpenFont(HOOK_PATH "/Inter_24pt-Black.ttf", 24 * FONT_SCALE);
+	app.font = TTF_OpenFont(HOOK_PATH "/Inter_24pt-BlackItalic.ttf", 24 * FONT_SCALE);
 }
-static void Menu_quit(void) {
-	SDL_Log("Menu_quit");
-	TTF_CloseFont(font);
+static void App_quit(void) {
+	SDL_Log("App_quit");
+	
+	for (size_t i=0; i<app.count; i++) {
+        free(app.items[i]);
+    }
+    free(app.items);
+	
+	TTF_CloseFont(app.font);
 	TTF_Quit();
+	
+	Settings_save();
 }
-static void Menu_loop(void) {
-	drastic_audio_pause(1);
+static void App_menu(void) {
+	// drastic_audio_pause(1);
 	
 	// static int screenshot = 0;
 	// char path[256];
 	// sprintf(path, "./screenshot-%i-top.bmp", screenshot);
-	// save_texture_screenshot(ctx.top, path);
+	// save_texture_screenshot(app.top, path);
 	// sprintf(path, "./screenshot-%i-bot.bmp", screenshot);
-	// save_texture_screenshot(ctx.bottom, path);
+	// save_texture_screenshot(app.bottom, path);
 	// screenshot += 1;
 	
 	int w = 1; // we can just stretch horizontally on the GPU
@@ -510,16 +647,18 @@ static void Menu_loop(void) {
 		*d = ((total - i) * 224 / total) << 24;
 	}
 
-	SDL_Texture* texture = SDL_CreateTextureFromSurface(ctx.renderer, tmp);
+	SDL_Texture* texture = SDL_CreateTextureFromSurface(app.renderer, tmp);
 	SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
 	SDL_FreeSurface(tmp);
 	
-	char* text = "New Super Mario Bros.";
-	tmp = TTF_RenderUTF8_Blended(font, text, (SDL_Color){255,255,255,255});
+	char name[MAX_FILE];
+	App_getDisplayName(settings.game, name);
+	
+	tmp = TTF_RenderUTF8_Blended(app.font, name, (SDL_Color){255,255,255,255});
 	int gw,gh;
 	gw = tmp->w / FONT_SCALE;
 	gh = tmp->h / FONT_SCALE;
-	SDL_Texture* game_name = SDL_CreateTextureFromSurface(ctx.renderer, tmp);
+	SDL_Texture* game_name = SDL_CreateTextureFromSurface(app.renderer, tmp);
 	SDL_SetTextureBlendMode(game_name, SDL_BLENDMODE_BLEND);
 	SDL_FreeSurface(tmp);
 	
@@ -532,28 +671,44 @@ static void Menu_loop(void) {
 			if (Device_handleEvent(&event)) continue;
 			
 			if (event.type==SDL_JOYBUTTONDOWN) {
-				if (event.jbutton.button==JOY_B) { // RESET
-					preload_game(); // this just queues up a load and jump but doesn't jump itself
+				if (event.jbutton.button==JOY_RIGHT) {
+					App_next();
+					preload_game();
 					in_menu = 0;
+					break;
 				}
-				else if (event.jbutton.button==JOY_A) { // LOAD
-					drastic_load_state(0);
+				else if (event.jbutton.button==JOY_LEFT) {
+					App_prev();
+					preload_game();
 					in_menu = 0;
+					break;
 				}
-				else if (event.jbutton.button==JOY_X) { // SAVE
+				
+				if (event.jbutton.button==JOY_B) {
+					in_menu = 0;
+					break;
+				}
+				else if (event.jbutton.button==JOY_Y) { // SAVE
 					drastic_save_state(0);
 					in_menu = 0;
+					break;
 				}
-				else if (event.jbutton.button==JOY_Y) { // SWITCH
-					
-					// loading jumps out of this function so we need to clean up first
-					SDL_DestroyTexture(texture);
-					
-					drastic_audio_pause(0);
-					
-					// TODO: can this be queued to do at the end of the frame?
-					// drastic_load_nds_and_jump(GAMES_PATH "/ba.nds");
-					drastic_load_nds_and_jump(GAMES_PATH "/nnk.nds");
+				else if (event.jbutton.button==JOY_X) { // LOAD
+					drastic_load_state(0);
+					in_menu = 0;
+					break;
+				}
+				
+				if (event.jbutton.button==JOY_START) {
+					drastic_quit();
+					in_menu = 0;
+					break;
+				}
+				else if (event.jbutton.button==JOY_SELECT) {
+					reset = 1;
+					preload_game();
+					in_menu = 0;
+					break;
 				}
 			}
 			else if (event.type==SDL_JOYBUTTONUP) {
@@ -565,27 +720,52 @@ static void Menu_loop(void) {
 		}
 		
 		// let the hook position them (for now)
-		SDL_RenderCopy(ctx.renderer, ctx.top, NULL, &(SDL_Rect){0,0,256,192});
-		SDL_RenderCopy(ctx.renderer, ctx.bottom, NULL, &(SDL_Rect){0,192,256,192});
-		real_SDL_RenderCopy(ctx.renderer, texture, NULL, NULL);
-		real_SDL_RenderCopy(ctx.renderer, game_name, NULL, &(SDL_Rect){0,0,gw,gh});
-		real_SDL_RenderPresent(ctx.renderer);
+		SDL_RenderCopy(app.renderer, app.top, NULL, &(SDL_Rect){0,0,256,192});
+		SDL_RenderCopy(app.renderer, app.bottom, NULL, &(SDL_Rect){0,192,256,192});
+		real_SDL_RenderCopy(app.renderer, texture, NULL, NULL);
+		real_SDL_RenderCopy(app.renderer, game_name, NULL, &(SDL_Rect){0,0,gw,gh});
+		real_SDL_RenderPresent(app.renderer);
 	}
-	
 	
 	SDL_DestroyTexture(game_name);
 	SDL_DestroyTexture(texture);
 
-	drastic_audio_pause(0);
+	// drastic_audio_pause(0);
 }
 
 // --------------------------------------------
 // hook SDL
 // --------------------------------------------
 
+typedef enum SDL_ScaleMode
+{
+    SDL_ScaleModeNearest, /**< nearest pixel sampling */
+    SDL_ScaleModeLinear,  /**< linear filtering */
+    SDL_ScaleModeBest     /**< anisotropic filtering */
+} SDL_ScaleMode;
+int SDL_SetTextureScaleMode(SDL_Texture * texture, SDL_ScaleMode scaleMode);
+
 int SDL_Init(Uint32 flags) {
-	set_brightness(brightness);
+	Settings_setBrightness(settings.brightness);
 	return real_SDL_Init(flags);
+}
+SDL_Window* SDL_CreateWindow(const char* title, int x, int y, int w, int h, Uint32 flags) {
+	// window size is always 480x800
+	app.window = real_SDL_CreateWindow(title, x, y, w, h, flags);
+
+	// int ww,wh;
+	// SDL_GetWindowSize(app.window, &ww, &wh);
+	// SDL_Log("SDL_CreateWindow() requested: %ix%i actual: %ix%i", w,h, ww,wh);
+
+	return app.window;
+}
+void SDL_SetWindowSize(SDL_Window* window, int w, int h) {
+	// SDL_Log("HOOK: SDL_SetWindowSize(%i, %i) - ignored");
+	// real_SDL_SetWindowSize(window, w, h);
+	
+	// int ww,wh;
+	// SDL_GetWindowSize(app.window, &ww, &wh);
+	// SDL_Log("window size: %ix%i", ww,wh);
 }
 int SDL_PollEvent(SDL_Event* event) {
 	// loop is required to capture button presses
@@ -595,21 +775,25 @@ int SDL_PollEvent(SDL_Event* event) {
 		
 		if (Device_handleEvent(event)) continue;
 		
-		// if (event->type==SDL_KEYDOWN) {
-		// 	if (event->key.keysym.scancode==SCAN_POWER) {
-		// 		drastic_quit();
-		// 		return 0;
-		// 	}
-		// }
 		if (event->type==SDL_JOYBUTTONDOWN) {
 			if (event->jbutton.button==JOY_L2) {
-				cropped = !cropped;
-				SDL_RenderSetLogicalSize(ctx.renderer,ctx.w,ctx.h);
+				settings.cropped = !settings.cropped;
+				
+				if (settings.cropped) {
+					if (app.top) SDL_SetTextureScaleMode(app.top, SDL_ScaleModeNearest);
+					if (app.bottom) SDL_SetTextureScaleMode(app.bottom, SDL_ScaleModeNearest);
+				}
+				else {
+					if (app.top) SDL_SetTextureScaleMode(app.top, SDL_ScaleModeBest);
+					if (app.bottom) SDL_SetTextureScaleMode(app.bottom, SDL_ScaleModeBest);
+				}
+				
+				SDL_RenderSetLogicalSize(app.renderer,app.w,app.h);
 				continue;
 			}
 			else if (event->jbutton.button==JOY_R2) {
-				gapped = !gapped;
-				SDL_RenderSetLogicalSize(ctx.renderer,ctx.w,ctx.h);
+				settings.gapped = !settings.gapped;
+				SDL_RenderSetLogicalSize(app.renderer,app.w,app.h);
 				continue;
 			}
 			else if (event->jbutton.button==JOY_MENU) {
@@ -618,7 +802,7 @@ int SDL_PollEvent(SDL_Event* event) {
 		}
 		else if (event->type==SDL_JOYBUTTONUP) {
 			if (event->jbutton.button==JOY_MENU) {
-				Menu_loop();
+				App_menu();
 				continue;
 			}
 		}
@@ -642,37 +826,37 @@ int SDL_PollEvent(SDL_Event* event) {
 }
 
 int SDL_RenderSetLogicalSize(SDL_Renderer *renderer, int w, int h) {
-	if (cropped) {
+	if (settings.cropped) {
 		w = 240;
 		h = 400;
 	}
 	else {
-		ctx.w = w;
-		ctx.h = h;
+		app.w = w;
+		app.h = h;
 
 		if (w==256) {
-			h = gapped ? 426 : 384;
+			h = settings.gapped ? 426 : 384;
 		}
 	}
 	SDL_Log("HOOK: SDL_RenderSetLogicalSize(%d, %d)", w, h);
 	int result = real_SDL_RenderSetLogicalSize(renderer, w, h);
-	SDL_RenderClear(ctx.renderer);
-	SDL_RenderPresent(ctx.renderer);
-	SDL_RenderClear(ctx.renderer);
+	SDL_RenderClear(app.renderer);
+	SDL_RenderPresent(app.renderer);
+	SDL_RenderClear(app.renderer);
 	return result;
 }
 int SDL_RenderCopy(SDL_Renderer *renderer, SDL_Texture  *texture, const SDL_Rect *srcrect, const SDL_Rect *dstrect) {
 	// return 1;
 	// LOG_render(renderer, texture, srcrect, dstrect);
 
-	if (cropped) {
+	if (settings.cropped) {
 		// game
 		if (dstrect) {
 			srcrect = &(SDL_Rect){8,0,240,192};
 			int y = dstrect->y;
 			if (y>0) y = 400-192;
 			
-			if (!gapped) {
+			if (!settings.gapped) {
 				if (y==0) y += 8;
 				else y -= 8;
 			}
@@ -690,7 +874,7 @@ int SDL_RenderCopy(SDL_Renderer *renderer, SDL_Texture  *texture, const SDL_Rect
 		// game
 		if (dstrect) {
 			int y = dstrect->y;
-			if (gapped && y>0) {
+			if (settings.gapped && y>0) {
 				y = 426 - 192;
 				dstrect = &(SDL_Rect){0,y,256,192};
 			}
@@ -702,35 +886,39 @@ int SDL_RenderCopy(SDL_Renderer *renderer, SDL_Texture  *texture, const SDL_Rect
 }
 
 SDL_Renderer* SDL_CreateRenderer(SDL_Window* window, int index, Uint32 flags) {
-	ctx.renderer = real_SDL_CreateRenderer(window, index, flags);
-	return ctx.renderer;
+	app.renderer = real_SDL_CreateRenderer(window, index, flags);
+	return app.renderer;
 }
 void SDL_RenderPresent(SDL_Renderer * renderer) {
 	if (preloading_game()) return;
 
-	// real_SDL_RenderCopy(renderer, ctx.top, NULL, &(SDL_Rect){0,0,256,192});
-	// real_SDL_RenderCopy(renderer, ctx.bottom, NULL, &(SDL_Rect){0,192,256,192});
+	// int ww,wh;
+	// SDL_GetWindowSize(app.window, &ww, &wh);
+	// SDL_Log("window size: %ix%i", ww,wh);
+	
+	// real_SDL_RenderCopy(renderer, app.top, NULL, &(SDL_Rect){0,0,256,192});
+	// real_SDL_RenderCopy(renderer, app.bottom, NULL, &(SDL_Rect){0,192,256,192});
 	real_SDL_RenderPresent(renderer);
 }
 
 SDL_Texture *SDL_CreateTexture(SDL_Renderer *renderer, Uint32 format, int type, int w, int h) {
 	SDL_Texture *texture = real_SDL_CreateTexture(renderer, format, type, w, h);
 	if (type==SDL_TEXTUREACCESS_STREAMING && w==256 && h==192) {
-		if (!ctx.top) ctx.top = texture;
-		else if (!ctx.bottom) ctx.bottom = texture;
+		if (!app.top) app.top = texture;
+		else if (!app.bottom) app.bottom = texture;
 	}
 	return texture;
 }
 void SDL_DestroyTexture(SDL_Texture *texture) {
-	if (texture==ctx.top) ctx.top = NULL;
-	else if (texture==ctx.bottom) ctx.bottom = NULL;
+	if (texture==app.top) app.top = NULL;
+	else if (texture==app.bottom) app.bottom = NULL;
 	
 	real_SDL_DestroyTexture(texture);
 }
 
 int SDL_OpenAudio(SDL_AudioSpec *desired, SDL_AudioSpec *obtained) {
 	int result = real_SDL_OpenAudio(desired, obtained);
-	set_volume(volume); // must be done here (or later)
+	Settings_setVolume(settings.volume); // must be done here (or later)
 	return result;
 }
 
@@ -751,12 +939,12 @@ int puts (const char *__s) {
 
 __attribute__((noreturn))
 void exit(int status) {
-	Menu_quit();
+	App_quit();
     real_exit(status);
 }
 __attribute__((noreturn))
 void _exit(int status) {
-	Menu_quit();
+	App_quit();
     real__exit(status);
 }
 int system(const char *command) {
@@ -787,6 +975,8 @@ static void resolve_real(void) {
 	
 	// hook SDL functions
 	real_SDL_Init = dlsym(RTLD_NEXT, "SDL_Init");
+	real_SDL_CreateWindow = dlsym(RTLD_NEXT, "SDL_CreateWindow");
+	real_SDL_SetWindowSize = dlsym(RTLD_NEXT, "SDL_SetWindowSize");
 	real_SDL_PollEvent = dlsym(RTLD_NEXT, "SDL_PollEvent");
 	real_SDL_RenderSetLogicalSize = dlsym(RTLD_NEXT, "SDL_RenderSetLogicalSize");
 	real_SDL_RenderCopy = dlsym(RTLD_NEXT, "SDL_RenderCopy");
@@ -796,7 +986,7 @@ static void resolve_real(void) {
 	real_SDL_RenderPresent = dlsym(RTLD_NEXT, "SDL_RenderPresent");
 	real_SDL_OpenAudio = dlsym(RTLD_NEXT, "SDL_OpenAudio");
 	
-	ctx.base = find_exe_base();
+	app.base = find_exe_base();
 	
 	printf("resolved real function pointers\n"); fflush(stdout);
 }
@@ -809,14 +999,9 @@ static inline void hook(void) {
 static drastic_main_t drastic_main = NULL;
 static int override_args(int argc, char **argv, char **envp) {
 	hook();
-	Menu_init();
+	App_init();
+	char *new_argv[] = { argv[0], app.game_path, NULL };
 	
-	// TODO: pull game from globals set by Menu_init()
-	char **new_argv = (char**)malloc(3 * sizeof(char*));
-	new_argv[0] = argv[0];
-	new_argv[1] = GAMES_PATH "/nsmb.nds";
-	new_argv[2] = NULL;
-
 	return drastic_main(2, new_argv, envp);
 }
 

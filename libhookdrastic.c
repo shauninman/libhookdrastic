@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_image.h>
 #include <SDL2/SDL_ttf.h>
 
 // --------------------------------------------
@@ -57,12 +58,9 @@ static struct {
 	
 	SDL_Window* window;
 	SDL_Renderer* renderer;
-	SDL_Texture* top;
-	SDL_Texture* bottom;
+	SDL_Texture* screens[2];
+	SDL_Rect rects[2];
 	TTF_Font* font;
-	
-	int w; // TODO: rename?
-	int h; // TODO: rename?
 	
 	int count;
 	int current;
@@ -71,10 +69,9 @@ static struct {
 	
 	char game_path[MAX_PATH];
 	char game_name[MAX_FILE];
-} app = {
-	.w=256,
-	.h=384,
-};
+	
+	int synced;
+} app;
 
 // --------------------------------------------
 // settings
@@ -85,14 +82,14 @@ static struct {
 	int volume;		// 0-20
 	int brightness;	// 0 - 10
 	int cropped;
-	int gapped;
+	int spread;
 	char game[MAX_PATH];
 } settings = {
 	.version = 1,
 	.volume = 6,
 	.brightness = 3,
 	.cropped = 1,
-	.gapped = 1,
+	.spread = 1,
 };
 
 #define SETTINGS_PATH HOOK_PATH "/settings.bin"
@@ -354,35 +351,6 @@ typedef void (*drastic_audio_unpause_t)(void *);
 static inline void* drastic_var_system(void) {
 	return PTR_AT(app.base + 0x15ff30); // follow arg in Cutter
 }
-static void drastic_load_nds_and_jump(const char* path) {
-	drastic_load_nds_t d_load_nds = GET_PFN(app.base + 0x0006fd30); // nm ./drastic | grep load_nds
-	drastic_reset_system_t d_reset_system = GET_PFN(app.base + 0x0000fd50); // nm ./drastic | grep reset_system
-	
-	void* sys = drastic_var_system();
-	d_load_nds((uint8_t *)sys + 800, path);
-	d_reset_system(sys);
-	
-	jmp_buf *env = (jmp_buf *)((uint8_t *)sys + 0x3b2a840); // from main in Cutter
-	longjmp(*env, 1); // no return
-}
-static void drastic_load_state(int slot) {
-	void* sys = drastic_var_system();	
-	drastic_load_state_t d_load_state = GET_PFN(app.base + 0x000746f0); // nm ./drastic | grep load_state
-	
-	char path[MAX_PATH];
-	sprintf(path, DRASTIC_PATH "/savestates/%s_%i.dss", app.game_name, slot);
-
-	d_load_state(sys, path, NULL,NULL,0);
-}
-static void drastic_save_state(int slot) {
-	void* sys = drastic_var_system();	
-	drastic_save_state_t d_save_state = GET_PFN(app.base + 0x00074da0); // nm ./drastic | grep save_state
-	
-	char name[MAX_FILE];
-	sprintf(name, "%s_%i.dss", app.game_name, slot);
-	
-	d_save_state(sys, DRASTIC_PATH "/savestates/", name, NULL,NULL);
-}
 static void drastic_audio_pause(int flag) {
 	// not sure this is necessary but
 	// it feels like good hygiene?
@@ -398,7 +366,50 @@ static void drastic_audio_pause(int flag) {
 		drastic_audio_unpause(audio);
 	}
 }
+static inline int drastic_is_saving(void) {
+	const volatile uint32_t *busy = (const volatile uint32_t *)(app.base + 0x3ec27c);
+	return __atomic_load_n(busy, __ATOMIC_ACQUIRE) != 0;
+}
+static void drastic_await_save(void) {
+	while (drastic_is_saving()) SDL_Delay(1);
+}
+static void drastic_load_nds_and_jump(const char* path) {
+	drastic_await_save();
+
+	drastic_load_nds_t d_load_nds = GET_PFN(app.base + 0x0006fd30); // nm ./drastic | grep load_nds
+	drastic_reset_system_t d_reset_system = GET_PFN(app.base + 0x0000fd50); // nm ./drastic | grep reset_system
+	
+	void* sys = drastic_var_system();
+	d_load_nds((uint8_t *)sys + 800, path);
+	d_reset_system(sys);
+	
+	jmp_buf *env = (jmp_buf *)((uint8_t *)sys + 0x3b2a840); // from main in Cutter
+	longjmp(*env, 1); // no return
+}
+static void drastic_load_state(int slot) {
+	drastic_await_save();
+
+	void* sys = drastic_var_system();	
+	drastic_load_state_t d_load_state = GET_PFN(app.base + 0x000746f0); // nm ./drastic | grep load_state
+	
+	char path[MAX_PATH];
+	sprintf(path, DRASTIC_PATH "/savestates/%s-%i.sav", app.game_name, slot);
+
+	d_load_state(sys, path, NULL,NULL,0);
+}
+static void drastic_save_state(int slot) {
+	drastic_await_save();
+
+	void* sys = drastic_var_system();	
+	drastic_save_state_t d_save_state = GET_PFN(app.base + 0x00074da0); // nm ./drastic | grep save_state
+	
+	char name[MAX_FILE];
+	sprintf(name, "%s-%i.sav", app.game_name, slot);
+	
+	d_save_state(sys, DRASTIC_PATH "/savestates/", name, NULL,NULL);
+}
 static void drastic_quit(void) {
+	drastic_await_save();
 	drastic_quit_t d_quit = GET_PFN(app.base + 0x0000e8d0); // nm ./drastic | grep quit
 	void* sys = drastic_var_system();	
 	d_quit(sys);
@@ -408,56 +419,40 @@ static void drastic_quit(void) {
 // support
 // --------------------------------------------
 
-static void save_texture_screenshot(SDL_Texture* texture, const char *path) {
-	if (!texture || !path) return;
-
-	void *pixels = NULL;
-	int pitch = 0;
-
-	int w,h,access;
-	Uint32 fmt;
-	SDL_QueryTexture(texture, &fmt, &access, &w, &h);
-	SDL_LockTexture(texture, NULL, &pixels, &pitch);
-
-	const int depth = SDL_BITSPERPIXEL(fmt);
-	SDL_Surface* surface = SDL_CreateRGBSurfaceWithFormatFrom(pixels, w, h, depth, pitch, fmt);
-	if (surface) {
-		SDL_SaveBMP(surface, path);
-		SDL_FreeSurface(surface);
-	}
-
-	SDL_UnlockTexture(texture);
-}
-
 // this is required to handle timing issues with drastic
 // I wonder if the timing varies with rom size...yes
-static int loaded = 1;
-static int defer = 30;
-static int resume = 1;
-static int reset = 0;
+#define LOAD_DEFER 35 // was 30
+#define RESUME_DEFER 15 // was 10
+static struct {
+	int loaded;
+	int defer;
+	int resume;
+	int reset;
+} preloader = {1,LOAD_DEFER,1,0};
+
 static int preload_game(void) {
 	drastic_audio_pause(0);
-	loaded = 0;
-	defer = 30;
-	resume = 0;
+	preloader.loaded = 0;
+	preloader.defer = 0; // only need to defer on boot, not when switching
+	preloader.resume = 0;
 }
 static int preloading_game(void) {
-	if (!loaded && !defer) {
-		loaded = 1;
-		resume = !reset;
-		reset = 0;
-		defer = resume ? 10 : 0;
+	if (!preloader.loaded && !preloader.defer) {
+		preloader.loaded = 1;
+		preloader.resume = !preloader.reset;
+		preloader.reset = 0;
+		preloader.defer = preloader.resume ? RESUME_DEFER : 0;
 		drastic_load_nds_and_jump(app.game_path);
 		return 1; // never returns because the above jumps
 	}
 	
-	if (defer) {
-		defer -= 1;
+	if (preloader.defer) {
+		preloader.defer -= 1;
 		return 1;
 	}
 	
-	if (resume) {
-		resume = 0;
+	if (preloader.resume) {
+		preloader.resume = 0;
 		drastic_load_state(0);
 	}
 	
@@ -468,12 +463,57 @@ static int preloading_game(void) {
 // custom menu
 // --------------------------------------------
 
+static void App_sync(int force) {
+	if (force) app.synced = 0;
+	
+	if (app.synced) return;
+	
+	if (settings.cropped) {
+		if (app.screens[0]) SDL_SetTextureScaleMode(app.screens[0], SDL_ScaleModeNearest);
+		if (app.screens[1]) SDL_SetTextureScaleMode(app.screens[1], SDL_ScaleModeNearest);
+	}
+	else {
+		if (app.screens[0]) SDL_SetTextureScaleMode(app.screens[0], SDL_ScaleModeBest);
+		if (app.screens[1]) SDL_SetTextureScaleMode(app.screens[1], SDL_ScaleModeBest);
+	}
+	
+	app.rects[0] = (SDL_Rect){0,0,256,192};
+	app.rects[1] = (SDL_Rect){0,0,256,192};
+	
+	if (settings.cropped) {
+		app.rects[0].w *= 2;
+		app.rects[0].h *= 2;
+
+		app.rects[1].w *= 2;
+		app.rects[1].h *= 2;
+
+		app.rects[0].x -= 8 * 2;
+		app.rects[1].x -= 8 * 2;
+	}
+	else {
+		app.rects[0].w = app.rects[1].w = 480;
+		app.rects[0].h = app.rects[1].h = 360;
+	}
+	
+	if (settings.spread) {
+		app.rects[1].y = 800 - app.rects[1].h;
+	}
+	else {
+		app.rects[1].y = app.rects[0].h;
+		int oy = (800 - app.rects[0].h*2) / 2;
+		app.rects[0].y += oy;
+		app.rects[1].y += oy;
+	}
+	
+	app.synced = 1;
+}
 static int Device_handleEvent(SDL_Event* event) {
 	static int menu_down = 0;
 	static int menu_combo = 0;
 	if (event->type==SDL_KEYDOWN) {
 		if (event->key.keysym.scancode==SCAN_POWER) {
 			unlink("/tmp/exec_loop");
+			drastic_save_state(0);
 			drastic_quit();
 			return 1; // handled
 		}
@@ -486,18 +526,12 @@ static int Device_handleEvent(SDL_Event* event) {
 		
 		if (event->jbutton.button==JOY_L2) {
 			settings.cropped = !settings.cropped;
-			if (settings.cropped) {
-				if (app.top) SDL_SetTextureScaleMode(app.top, SDL_ScaleModeNearest);
-				if (app.bottom) SDL_SetTextureScaleMode(app.bottom, SDL_ScaleModeNearest);
-			}
-			else {
-				if (app.top) SDL_SetTextureScaleMode(app.top, SDL_ScaleModeBest);
-				if (app.bottom) SDL_SetTextureScaleMode(app.bottom, SDL_ScaleModeBest);
-			}
+			App_sync(1);
 			return 1;
 		}
 		else if (event->jbutton.button==JOY_R2) {
-			settings.gapped = !settings.gapped;
+			settings.spread = !settings.spread;
+			App_sync(1);
 			return 1;
 		}
 		
@@ -579,6 +613,11 @@ static int App_sort(const void* a, const void* b) {
     const char* j = *(const char**)b;
     return strcasecmp(i, j);
 }
+
+// TODO: App_set/next/prev are a bad idea
+// I'm trying to use them for state and UI
+// this results in saving the current game's
+// state over the incoming game's state
 static void App_set(int i) {
 	if (i>=app.count) i -= app.count;
 	if (i<0) i += app.count;
@@ -603,6 +642,71 @@ static void App_next(void) {
 }
 static void App_prev(void) {
 	App_set(app.current-1);
+}
+
+// TODO: App_screenshot/preview should also take current and create game_name on the fly
+static void App_screenshot(int current, int screen) {
+	if (!app.screens[screen]) return;
+	SDL_Texture* texture = app.screens[screen];
+	
+	char game_name[MAX_FILE];
+	strcpy(game_name, app.items[current]);
+	char *dot = strrchr(game_name, '.');
+	if (dot && dot!=game_name) *dot = '\0';
+	
+	char path[MAX_PATH];
+	sprintf(path, HOOK_PATH "/screenshots/%s-%i.bmp", game_name, screen);
+	SDL_Log("screenshot: %s", path);
+	
+	void *pixels = NULL;
+	int pitch = 0;
+
+	int w,h,access;
+	Uint32 fmt;
+	SDL_QueryTexture(texture, &fmt, &access, &w, &h);
+	SDL_LockTexture(texture, NULL, &pixels, &pitch);
+
+	const int depth = SDL_BITSPERPIXEL(fmt);
+	SDL_Surface* surface = SDL_CreateRGBSurfaceWithFormatFrom(pixels, w, h, depth, pitch, fmt);
+	if (surface) {
+		SDL_SaveBMP(surface, path);
+		SDL_FreeSurface(surface);
+	}
+
+	SDL_UnlockTexture(texture);
+}
+static void App_preview(int current, int screen) {
+	if (!app.screens[screen]) return;
+	SDL_Texture* texture = app.screens[screen];
+	
+	char game_name[MAX_FILE];
+	strcpy(game_name, app.items[current]);
+	char *dot = strrchr(game_name, '.');
+	if (dot && dot!=game_name) *dot = '\0';
+	
+	char path[MAX_PATH];
+	sprintf(path, HOOK_PATH "/screenshots/%s-%i.bmp", game_name, screen);
+	if (access(SETTINGS_PATH, F_OK)!=0) sprintf(path, HOOK_PATH "/screenshot-%i.png", screen);
+
+	SDL_Log("preview: %s", path);
+	SDL_Surface* tmp = IMG_Load(path);
+
+	int w, h;
+	Uint32 format;
+	SDL_QueryTexture(texture, &format, NULL, &w, &h);
+
+	if (format==tmp->format->format) {
+	    SDL_UpdateTexture(texture, NULL, tmp->pixels, tmp->pitch);
+	} else {
+	    void *dst;
+	    int dst_pitch;
+	    if (SDL_LockTexture(texture, NULL, &dst, &dst_pitch) == 0) {
+	        SDL_ConvertPixels(w, h, tmp->format->format, tmp->pixels, tmp->pitch, format, dst, dst_pitch);
+	        SDL_UnlockTexture(texture);
+	    }
+	}
+	
+	SDL_FreeSurface(tmp);
 }
 
 static void App_init(void) {
@@ -660,50 +764,20 @@ static void App_quit(void) {
 	Settings_save();
 }
 static void App_render(void) {
-	if (!app.renderer || !app.top || !app.bottom) return;
+	if (!app.renderer || !app.screens[0] || !app.screens[1]) return;
 	real_SDL_RenderClear(app.renderer);
-		
-	SDL_Rect rect1 = {0,0,256,192};
-	SDL_Rect rect2 = {0,0,256,192};
+	App_sync(0);
+	real_SDL_RenderCopy(app.renderer, app.screens[0], NULL, &app.rects[0]);
+	real_SDL_RenderCopy(app.renderer, app.screens[1], NULL, &app.rects[1]);
 	
-	if (settings.cropped) {
-		rect1.w *= 2;
-		rect1.h *= 2;
-
-		rect2.w *= 2;
-		rect2.h *= 2;
-
-		rect1.x -= 8 * 2;
-		rect2.x -= 8 * 2;
-	}
-	else {
-		rect1.w = rect2.w = 480;
-		rect1.h = rect2.h = 360;
-	}
-	
-	if (settings.gapped) {
-		rect2.y = 800 - rect2.h;
-	}
-	else {
-		rect2.y = rect1.h;
-		int oy = (800 - rect1.h*2) / 2;
-		rect1.y += oy;
-		rect2.y += oy;
-	}
-	
-	real_SDL_RenderCopy(app.renderer, app.top, NULL, &rect1);
-	real_SDL_RenderCopy(app.renderer, app.bottom, NULL, &rect2);
+	if (drastic_is_saving()) SDL_Log("saving...");
 }
 static void App_menu(void) {
 	// drastic_audio_pause(1);
-	
-	// static int screenshot = 0;
-	// char path[256];
-	// sprintf(path, "./screenshot-%i-top.bmp", screenshot);
-	// save_texture_screenshot(app.top, path);
-	// sprintf(path, "./screenshot-%i-bot.bmp", screenshot);
-	// save_texture_screenshot(app.bottom, path);
-	// screenshot += 1;
+
+	int current = app.current;
+	App_screenshot(current, 0);
+	App_screenshot(current, 1);
 	
 	int w = 1; // we can just stretch horizontally on the GPU
 	int h = 800;
@@ -719,17 +793,7 @@ static void App_menu(void) {
 	SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
 	SDL_FreeSurface(tmp);
 	
-	char name[MAX_FILE];
-	App_getDisplayName(settings.game, name);
-	
-	tmp = TTF_RenderUTF8_Blended(app.font, name, (SDL_Color){255,255,255,255});
-	int gw,gh;
-	gw = tmp->w;
-	gh = tmp->h;
-	SDL_Texture* game_name = SDL_CreateTextureFromSurface(app.renderer, tmp);
-	SDL_SetTextureBlendMode(game_name, SDL_BLENDMODE_BLEND);
-	SDL_FreeSurface(tmp);
-	
+	int dirty = 1;
 	int in_menu = 1;
 	SDL_Event event;
 	while (in_menu) {
@@ -740,19 +804,24 @@ static void App_menu(void) {
 			
 			if (event.type==SDL_JOYBUTTONDOWN) {
 				if (event.jbutton.button==JOY_RIGHT) {
-					App_next();
-					preload_game();
-					in_menu = 0;
-					break;
+					current += 1;
+					if (current>=app.count) current -= app.count;
+					dirty = 1;
 				}
 				else if (event.jbutton.button==JOY_LEFT) {
-					App_prev();
-					preload_game();
+					current -= 1;
+					if (current<0) current += app.count;
+					dirty = 1;
+				}
+				
+				if (event.jbutton.button==JOY_B) { // BACK
 					in_menu = 0;
 					break;
 				}
-				
-				if (event.jbutton.button==JOY_B) {
+				else if (event.jbutton.button==JOY_A) { // SELECt
+					drastic_save_state(0);
+					App_set(current);
+					preload_game();
 					in_menu = 0;
 					break;
 				}
@@ -768,12 +837,13 @@ static void App_menu(void) {
 				}
 				
 				if (event.jbutton.button==JOY_START) {
+					drastic_save_state(0);
 					drastic_quit();
 					in_menu = 0;
 					break;
 				}
 				else if (event.jbutton.button==JOY_SELECT) {
-					reset = 1;
+					preloader.reset = 1;
 					preload_game();
 					in_menu = 0;
 					break;
@@ -788,13 +858,32 @@ static void App_menu(void) {
 		}
 		
 		// let the hook position them (for now)
-		App_render();
-		real_SDL_RenderCopy(app.renderer, texture, NULL, NULL);
-		real_SDL_RenderCopy(app.renderer, game_name, NULL, &(SDL_Rect){0,0,gw,gh});
-		real_SDL_RenderPresent(app.renderer);
+		if (dirty) {
+			dirty = 0;
+			App_preview(current,0);
+			App_preview(current,1);
+			
+			App_render();
+			real_SDL_RenderCopy(app.renderer, texture, NULL, NULL);
+			
+			char name[MAX_FILE];
+			App_getDisplayName(app.items[current], name);
+	
+			tmp = TTF_RenderUTF8_Blended(app.font, name, (SDL_Color){255,255,255,255});
+			int gw,gh;
+			gw = tmp->w;
+			gh = tmp->h;
+			SDL_Texture* game_name = SDL_CreateTextureFromSurface(app.renderer, tmp);
+			SDL_FreeSurface(tmp);
+			SDL_SetTextureBlendMode(game_name, SDL_BLENDMODE_BLEND);
+			real_SDL_RenderCopy(app.renderer, game_name, NULL, &(SDL_Rect){0,0,gw,gh});
+			SDL_DestroyTexture(game_name);
+			
+			real_SDL_RenderPresent(app.renderer);
+			SDL_Delay(16); 
+		}
 	}
 	
-	SDL_DestroyTexture(game_name);
 	SDL_DestroyTexture(texture);
 
 	// drastic_audio_pause(0);
@@ -878,14 +967,14 @@ void SDL_RenderPresent(SDL_Renderer * renderer) {
 SDL_Texture *SDL_CreateTexture(SDL_Renderer *renderer, Uint32 format, int type, int w, int h) {
 	SDL_Texture *texture = real_SDL_CreateTexture(renderer, format, type, w, h);
 	if (type==SDL_TEXTUREACCESS_STREAMING && w==256 && h==192) {
-		if (!app.top) app.top = texture;
-		else if (!app.bottom) app.bottom = texture;
+		if (!app.screens[0]) app.screens[0] = texture;
+		else if (!app.screens[1]) app.screens[1] = texture;
 	}
 	return texture;
 }
 void SDL_DestroyTexture(SDL_Texture *texture) {
-	if (texture==app.top) app.top = NULL;
-	else if (texture==app.bottom) app.bottom = NULL;
+	if (texture==app.screens[0]) app.screens[0] = NULL;
+	else if (texture==app.screens[1]) app.screens[1] = NULL;
 	
 	real_SDL_DestroyTexture(texture);
 }

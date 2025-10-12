@@ -1,14 +1,8 @@
-ignore SDL_RenderSetLogicalSize from drastic
-ignore SDL_RenderCopy from drastic
-do all drawing myself in SDL_RenderPresent
-
------------------------------------------------
-
-I think I need some hook to make sure that saving 
-is finished before quitting?
-
-loading a game continues to run the current game
-for a few more frames
+- wrap game name
+- menu faux sleep after delay (unless charging)
+- faux sleep on POWER
+- poweroff on long press
+- remap mouse coordinates
 
 -----------------------------------------------
 

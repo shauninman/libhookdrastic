@@ -1,8 +1,6 @@
-- wrap game name
 - menu faux sleep after delay (unless charging)
 - faux sleep on POWER
 - poweroff on long press
-- remap mouse coordinates
 
 -----------------------------------------------
 

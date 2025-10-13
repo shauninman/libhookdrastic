@@ -27,6 +27,9 @@
 #define MAX_PATH 512
 #define MAX_FILE 256
 
+#define SCREEN_WIDTH 480
+#define SCREEN_HEIGHT 800
+
 // --------------------------------------------
 
 #define JOY_UP 		12
@@ -496,14 +499,19 @@ static void App_sync(int force) {
 	}
 	
 	if (settings.spread) {
-		app.rects[1].y = 800 - app.rects[1].h;
+		app.rects[1].y = SCREEN_HEIGHT - app.rects[1].h;
 	}
 	else {
 		app.rects[1].y = app.rects[0].h;
-		int oy = (800 - app.rects[0].h*2) / 2;
+		int oy = (SCREEN_HEIGHT - app.rects[0].h*2) / 2;
 		app.rects[0].y += oy;
 		app.rects[1].y += oy;
 	}
+	
+	SDL_Log("screens[0]:{%i,%i,%i,%i} screens[1]:{%i,%i,%i,%i}", 
+		app.rects[0].x, app.rects[0].y, app.rects[0].w, app.rects[0].h,
+		app.rects[1].x, app.rects[1].y, app.rects[1].w, app.rects[1].h
+	);
 	
 	app.synced = 1;
 }
@@ -644,7 +652,6 @@ static void App_prev(void) {
 	App_set(app.current-1);
 }
 
-// TODO: App_screenshot/preview should also take current and create game_name on the fly
 static void App_screenshot(int current, int screen) {
 	if (!app.screens[screen]) return;
 	SDL_Texture* texture = app.screens[screen];
@@ -686,7 +693,7 @@ static void App_preview(int current, int screen) {
 	
 	char path[MAX_PATH];
 	sprintf(path, HOOK_PATH "/screenshots/%s-%i.bmp", game_name, screen);
-	if (access(SETTINGS_PATH, F_OK)!=0) sprintf(path, HOOK_PATH "/screenshot-%i.png", screen);
+	if (access(path, F_OK)!=0) sprintf(path, HOOK_PATH "/screenshot-%i.png", screen);
 
 	SDL_Log("preview: %s", path);
 	SDL_Surface* tmp = IMG_Load(path);
@@ -772,6 +779,77 @@ static void App_render(void) {
 	
 	if (drastic_is_saving()) SDL_Log("saving...");
 }
+static  int App_wrap(TTF_Font* font, char* text, SDL_Surface** lines, int max_lines) {
+	int line_count = 0;
+
+	char line[1024] = {0};
+	char word[256] = {0};
+	char* p = text;
+	int line_width = 0;
+	
+	int color = 0;
+	SDL_Color colors[] = {
+		{0xff,0xff,0xff}, // white
+		{0xd6,0xb2,0x63}, // gold
+		{0x99,0x99,0x99}, // gray
+	};
+	size_t MAX_COLORS = sizeof(colors) / sizeof(colors[0]);
+
+	while (*p) {
+		char* start = p;
+	
+		// get next word
+		while (*p && !isspace(*p)) p++;
+		int word_len = p - start;
+		strncpy(word, start, word_len);
+		word[word_len] = '\0';
+		
+		// wrap on hyphen
+		if (strcmp(word, "-") == 0) {
+			if (strlen(line) > 0 && line_count < max_lines) {
+				lines[line_count++] = TTF_RenderUTF8_Blended(font, line, colors[color]);
+				line[0] = '\0';
+				
+				color += 1;
+				color %= MAX_COLORS;
+			}
+			while (isspace(*p)) p++;
+			continue;
+		}
+	
+		// append to line
+		char test_line[1024] = {0};
+		if (strlen(line)>0) sprintf(test_line,"%s %s", line, word);
+		else sprintf(test_line,"%s", word);
+	
+		TTF_SizeUTF8(font, test_line, &line_width, NULL);
+	
+		if (line_width<SCREEN_WIDTH) {
+			strcpy(line, test_line);
+		}
+		else {
+			if (line_count<max_lines) {
+				SDL_Surface* txt = TTF_RenderUTF8_Blended(font, line, colors[color]);
+				lines[line_count++] = txt;
+			}
+			else {
+				line[0] = '\0';
+				break;
+			}
+			strcpy(line, word);
+		}
+	
+		// advance to next word
+		while (isspace(*p)) p++;
+	}
+
+	// add trailing line
+	if (strlen(line)>0 && line_count<max_lines) {
+		SDL_Surface* txt = TTF_RenderUTF8_Blended(font, line, colors[color]);
+		lines[line_count++] = txt;
+	}
+	return line_count;
+}
 static void App_menu(void) {
 	// drastic_audio_pause(1);
 
@@ -780,7 +858,7 @@ static void App_menu(void) {
 	App_screenshot(current, 1);
 	
 	int w = 1; // we can just stretch horizontally on the GPU
-	int h = 800;
+	int h = SCREEN_HEIGHT;
 	SDL_Surface* tmp = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32, SDL_PIXELFORMAT_ARGB8888);
 
 	uint32_t* d = tmp->pixels;
@@ -789,16 +867,18 @@ static void App_menu(void) {
 		*d = ((total - i) * 224 / total) << 24;
 	}
 
-	SDL_Texture* texture = SDL_CreateTextureFromSurface(app.renderer, tmp);
-	SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+	SDL_Texture* overlay = SDL_CreateTextureFromSurface(app.renderer, tmp);
+	SDL_SetTextureBlendMode(overlay, SDL_BLENDMODE_BLEND);
 	SDL_FreeSurface(tmp);
 	
 	int dirty = 1;
 	int in_menu = 1;
 	SDL_Event event;
 	while (in_menu) {
-		while (real_SDL_PollEvent(&event)) {
+		while (in_menu && real_SDL_PollEvent(&event)) {
 			LOG_event(&event);
+			
+			if (event.jbutton.button==JOY_L2 || event.jbutton.button==JOY_R2) dirty = 1;
 			
 			if (Device_handleEvent(&event)) continue;
 			
@@ -816,43 +896,37 @@ static void App_menu(void) {
 				
 				if (event.jbutton.button==JOY_B) { // BACK
 					in_menu = 0;
-					break;
 				}
 				else if (event.jbutton.button==JOY_A) { // SELECt
 					drastic_save_state(0);
 					App_set(current);
+					Settings_save();
 					preload_game();
 					in_menu = 0;
-					break;
 				}
 				else if (event.jbutton.button==JOY_Y) { // SAVE
 					drastic_save_state(0);
 					in_menu = 0;
-					break;
 				}
 				else if (event.jbutton.button==JOY_X) { // LOAD
 					drastic_load_state(0);
 					in_menu = 0;
-					break;
 				}
 				
 				if (event.jbutton.button==JOY_START) {
 					drastic_save_state(0);
 					drastic_quit();
 					in_menu = 0;
-					break;
 				}
 				else if (event.jbutton.button==JOY_SELECT) {
 					preloader.reset = 1;
 					preload_game();
 					in_menu = 0;
-					break;
 				}
 			}
 			else if (event.type==SDL_JOYBUTTONUP) {
 				if (event.jbutton.button==JOY_MENU) {
 					in_menu = 0;
-					break;
 				}
 			}
 		}
@@ -864,27 +938,35 @@ static void App_menu(void) {
 			App_preview(current,1);
 			
 			App_render();
-			real_SDL_RenderCopy(app.renderer, texture, NULL, NULL);
+			real_SDL_RenderCopy(app.renderer, overlay, NULL, NULL);
 			
 			char name[MAX_FILE];
 			App_getDisplayName(app.items[current], name);
 	
-			tmp = TTF_RenderUTF8_Blended(app.font, name, (SDL_Color){255,255,255,255});
-			int gw,gh;
-			gw = tmp->w;
-			gh = tmp->h;
-			SDL_Texture* game_name = SDL_CreateTextureFromSurface(app.renderer, tmp);
-			SDL_FreeSurface(tmp);
-			SDL_SetTextureBlendMode(game_name, SDL_BLENDMODE_BLEND);
-			real_SDL_RenderCopy(app.renderer, game_name, NULL, &(SDL_Rect){0,0,gw,gh});
-			SDL_DestroyTexture(game_name);
+			#define MAX_LINES 8
+			SDL_Surface* lines[MAX_LINES] = {0};
+			int line_count = App_wrap(app.font, name, lines, MAX_LINES);
+			
+			int line_height = 24 * FONT_SCALE;
+			int h = line_count * line_height;
+			int y = 0;
+			for (int i=0; i<line_count; i++) {
+				SDL_Surface* line = lines[i];
+				SDL_Texture* texture = SDL_CreateTextureFromSurface(app.renderer, line);
+				SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+				real_SDL_RenderCopy(app.renderer, texture, NULL, &(SDL_Rect){0,y,line->w,line->h});
+				SDL_FreeSurface(line);
+				SDL_DestroyTexture(texture);
+				lines[i] = NULL;
+				y += line_height;
+			}
 			
 			real_SDL_RenderPresent(app.renderer);
 			SDL_Delay(16); 
 		}
 	}
 	
-	SDL_DestroyTexture(texture);
+	SDL_DestroyTexture(overlay);
 
 	// drastic_audio_pause(0);
 }
@@ -929,13 +1011,31 @@ int SDL_PollEvent(SDL_Event* event) {
 			case SDL_FINGERDOWN:
 			case SDL_FINGERUP:
 			case SDL_FINGERMOTION: {
-				// for some reason drastic isn't expecting normalized coords so convert to window/screen
-				int w = 480;
-				int h = 800;
-				event->tfinger.x *= w;
-				event->tfinger.y *= h;
-				event->tfinger.dx *= w;
-				event->tfinger.dy *= h;
+				// for some reason drastic isn't expecting 
+				// normalized coords so convert to window
+				int x = event->tfinger.x * SCREEN_WIDTH;
+				int y = event->tfinger.y * SCREEN_HEIGHT;
+				
+				// SDL_Log("touch (window) %i,%i (%f,%f)", x,y, event->tfinger.x,event->tfinger.y);
+
+				SDL_Rect src = app.rects[1];
+
+				// clamp to bottom screen
+				if (x>=SCREEN_WIDTH) x = SCREEN_WIDTH-1;
+				else if (x<0) x = 0;
+				if (y>=src.y+src.h) y = src.y+src.h-1;
+				else if (y<src.y) y = src.y;
+
+				static const SDL_Rect dst = { 0, 400, 480, 400 };
+
+				int dx = x - src.x;
+				int dy = y - src.y;
+				x = dst.x + ((dx * dst.w + (src.w >> 1)) / src.w);
+				y = dst.y + ((dy * dst.h + (src.h >> 1)) / src.h);
+
+				// SDL_Log("touch (adjust) %i,%i", x,y);
+				event->tfinger.x = x;
+				event->tfinger.y = y;
 			} break;
 		}
 		

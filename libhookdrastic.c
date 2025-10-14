@@ -21,14 +21,15 @@
 #define DRASTIC_PATH 	SDCARD_PATH "/drastic"
 #define HOOK_PATH		DRASTIC_PATH "/hook"
 
-#define FONT_SCALE 2
-
 #define MAX_LINE 1024
 #define MAX_PATH 512
 #define MAX_FILE 256
 
 #define SCREEN_WIDTH 480
 #define SCREEN_HEIGHT 800
+
+#define FAUX_BOLT "͛"
+#define BUTTON_BG "⬤"
 
 // --------------------------------------------
 
@@ -62,8 +63,12 @@ static struct {
 	SDL_Window* window;
 	SDL_Renderer* renderer;
 	SDL_Texture* screens[2];
+	SDL_Texture* overlay;
+	SDL_Texture* button;
 	SDL_Rect rects[2];
 	TTF_Font* font;
+	TTF_Font* mini;
+	TTF_Font* bolt;
 	
 	int count;
 	int current;
@@ -463,8 +468,46 @@ static int preloading_game(void) {
 }
 
 // --------------------------------------------
+
+static int getInt(char* path) {
+	int i = 0;
+	FILE *file = fopen(path, "r");
+	if (file!=NULL) {
+		fscanf(file, "%i", &i);
+		fclose(file);
+	}
+	return i;
+}
+static void getFile(char* path, char* buffer, size_t buffer_size) {
+	FILE *file = fopen(path, "r");
+	if (file) {
+		fseek(file, 0L, SEEK_END);
+		size_t size = ftell(file);
+		if (size>buffer_size-1) size = buffer_size - 1;
+		rewind(file);
+		fread(buffer, sizeof(char), size, file);
+		fclose(file);
+		buffer[size] = '\0';
+	}
+}
+
+// --------------------------------------------
 // custom menu
 // --------------------------------------------
+
+#define BAT_PATH "/sys/class/power_supply/axp2202-battery/"
+#define USB_PATH "/sys/class/power_supply/axp2202-usb/"
+static int App_getBattery(void) {
+	return getInt(BAT_PATH "capacity");
+}
+static int App_isCharging(void) {
+	// char *expect = "Charging";
+	// char status[32];
+	// getFile(BAT_PATH "status", status, sizeof(status));
+	// SDL_Log("App_isCharging: %s", status);
+	// return strncasecmp(expect,status,strlen(expect))==0;
+	return getInt(USB_PATH "online");
+}
 
 static void App_sync(int force) {
 	if (force) app.synced = 0;
@@ -715,6 +758,14 @@ static void App_preview(int current, int screen) {
 	
 	SDL_FreeSurface(tmp);
 }
+static  int App_capture(void) {
+	SDL_Log("capture");
+	SDL_Surface *tmp = SDL_CreateRGBSurfaceWithFormat(0, SCREEN_WIDTH, SCREEN_HEIGHT, 32, SDL_PIXELFORMAT_ARGB8888);
+	SDL_RenderReadPixels(app.renderer, NULL, SDL_PIXELFORMAT_ARGB8888, tmp->pixels, tmp->pitch);
+	SDL_SaveBMP(tmp, "/tmp/capture.bmp");
+	SDL_FreeSurface(tmp);
+}
+
 
 static void App_init(void) {
 	Settings_load();
@@ -755,7 +806,9 @@ static void App_init(void) {
 	App_set(app.current);
 	
 	TTF_Init();
-	app.font = TTF_OpenFont(HOOK_PATH "/Inter_24pt-BlackItalic.ttf", 24 * FONT_SCALE);
+	app.font = TTF_OpenFont(HOOK_PATH "/Inter_24pt-BlackItalic.ttf", 48);
+	app.mini = TTF_OpenFont(HOOK_PATH "/Inter_24pt-Black.ttf", 24);
+	app.bolt = TTF_OpenFont(HOOK_PATH "/Inter_24pt-BoldItalic.ttf", 80);
 }
 static void App_quit(void) {
 	SDL_Log("App_quit");
@@ -765,6 +818,11 @@ static void App_quit(void) {
     }
     free(app.items);
 	
+	if (app.overlay) SDL_DestroyTexture(app.overlay);
+	if (app.button) SDL_DestroyTexture(app.button);
+	
+	TTF_CloseFont(app.bolt);
+	TTF_CloseFont(app.mini);
 	TTF_CloseFont(app.font);
 	TTF_Quit();
 	
@@ -810,8 +868,8 @@ static  int App_wrap(TTF_Font* font, char* text, SDL_Surface** lines, int max_li
 				lines[line_count++] = TTF_RenderUTF8_Blended(font, line, colors[color]);
 				line[0] = '\0';
 				
-				color += 1;
-				color %= MAX_COLORS;
+				// color += 1;
+				// color %= MAX_COLORS;
 			}
 			while (isspace(*p)) p++;
 			continue;
@@ -823,8 +881,9 @@ static  int App_wrap(TTF_Font* font, char* text, SDL_Surface** lines, int max_li
 		else sprintf(test_line,"%s", word);
 	
 		TTF_SizeUTF8(font, test_line, &line_width, NULL);
-	
-		if (line_width<SCREEN_WIDTH) {
+		
+		int ow = line_count==0 ? 104 : 0;
+		if (line_width<SCREEN_WIDTH-ow) {
 			strcpy(line, test_line);
 		}
 		else {
@@ -850,6 +909,91 @@ static  int App_wrap(TTF_Font* font, char* text, SDL_Surface** lines, int max_li
 	}
 	return line_count;
 }
+static int App_button(const char* button, const char* hint, int x, int y) {
+	int tw,bw,bh;
+	SDL_QueryTexture(app.button, NULL, NULL, &bw, &bh);
+	SDL_Surface* tmp;
+	SDL_Texture* texture;
+	
+	static const SDL_Color white = {0xff,0xff,0xff};
+	static const SDL_Color black = {0x0,0x0,0x0};
+	
+	if (x<0) {
+		x += SCREEN_WIDTH;
+		int w;
+		TTF_SizeUTF8(app.mini, hint, &w, NULL);
+		x -= w;
+		x -= 6;
+		
+		if (strlen(button)==1) {
+			x -= bw;
+		}
+		else {
+			TTF_SizeUTF8(app.mini, button, &w, NULL);
+			x -= 10 + w + 10;
+		}
+	}
+	
+
+	if (strlen(button)==1) {
+		// background
+		real_SDL_RenderCopy(app.renderer, app.button, NULL, &(SDL_Rect){x,y,bw,bh});
+		y += 2;
+		
+		// button name
+		tmp = TTF_RenderUTF8_Blended(app.mini, button, black);
+		texture = SDL_CreateTextureFromSurface(app.renderer, tmp);
+		SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+	
+		int ox = (bw - tmp->w) / 2;
+		real_SDL_RenderCopy(app.renderer, texture, NULL, &(SDL_Rect){x+ox,y,tmp->w,tmp->h});
+	
+		SDL_FreeSurface(tmp);
+		SDL_DestroyTexture(texture);
+	}
+	else {
+		// button name
+		tmp = TTF_RenderUTF8_Blended(app.mini, button, black);
+		texture = SDL_CreateTextureFromSurface(app.renderer, tmp);
+		SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+		
+		int fw = 10 + tmp->w + 10;
+		
+		int w2 = bw/2;
+		real_SDL_RenderCopy(app.renderer, app.button, &(SDL_Rect){0,0,w2,bh}, &(SDL_Rect){x,y,w2,bh});
+		real_SDL_RenderCopy(app.renderer, app.button, &(SDL_Rect){w2-1,0,2,bh}, &(SDL_Rect){x+w2,y,fw-(w2+w2),bh});
+		real_SDL_RenderCopy(app.renderer, app.button, &(SDL_Rect){w2,0,w2,bh}, &(SDL_Rect){x+fw-w2,y,w2,bh});
+		y += 2;
+		
+		int ox = 10;
+		real_SDL_RenderCopy(app.renderer, texture, NULL, &(SDL_Rect){x+ox,y,tmp->w,tmp->h});
+	
+		SDL_FreeSurface(tmp);
+		SDL_DestroyTexture(texture);
+		
+		bw = fw;
+	}
+	
+	tw = bw;
+	x += bw;
+	
+	tw += 6;
+	x += 6;
+	
+	// hint
+	tmp = TTF_RenderUTF8_Blended(app.mini, hint, white);
+	texture = SDL_CreateTextureFromSurface(app.renderer, tmp);
+	SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+	
+	real_SDL_RenderCopy(app.renderer, texture, NULL, &(SDL_Rect){x,y,tmp->w,tmp->h});
+	
+	tw += tmp->w;
+	
+	SDL_FreeSurface(tmp);
+	SDL_DestroyTexture(texture);
+	
+	return tw;
+}
 static void App_menu(void) {
 	// drastic_audio_pause(1);
 
@@ -857,20 +1001,35 @@ static void App_menu(void) {
 	App_screenshot(current, 0);
 	App_screenshot(current, 1);
 	
-	int w = 1; // we can just stretch horizontally on the GPU
-	int h = SCREEN_HEIGHT;
-	SDL_Surface* tmp = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32, SDL_PIXELFORMAT_ARGB8888);
-
-	uint32_t* d = tmp->pixels;
-	int total = w * h;
-	for (int i=0; i<total; i++,d++) {
-		*d = ((total - i) * 224 / total) << 24;
-	}
-
-	SDL_Texture* overlay = SDL_CreateTextureFromSurface(app.renderer, tmp);
-	SDL_SetTextureBlendMode(overlay, SDL_BLENDMODE_BLEND);
-	SDL_FreeSurface(tmp);
+	static const SDL_Color gray = {0xa6,0xa6,0xa6};
+	static const SDL_Color half = {0x53,0x53,0x53};
+	static const SDL_Color white = {0xff,0xff,0xff};
+	static const SDL_Color black = {0x0,0x0,0x0};
 	
+	SDL_Surface* tmp;
+	if (!app.overlay) {
+		int w = 1; // we can just stretch horizontally on the GPU
+		int h = SCREEN_HEIGHT;
+		tmp = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32, SDL_PIXELFORMAT_ARGB8888);
+
+		uint32_t* d = tmp->pixels;
+		int total = w * h;
+		for (int i=0; i<total; i++,d++) {
+			*d = ((total - i) * 224 / total) << 24;
+		}
+
+		app.overlay = SDL_CreateTextureFromSurface(app.renderer, tmp);
+		SDL_SetTextureBlendMode(app.overlay, SDL_BLENDMODE_BLEND);
+		SDL_FreeSurface(tmp);
+	}
+	if (!app.button) {
+		tmp = TTF_RenderUTF8_Blended(app.mini, BUTTON_BG, white);
+		app.button = SDL_CreateTextureFromSurface(app.renderer, tmp);
+		SDL_SetTextureBlendMode(app.button, SDL_BLENDMODE_BLEND);
+		SDL_FreeSurface(tmp);
+	}
+	
+	int capture = 0;
 	int dirty = 1;
 	int in_menu = 1;
 	SDL_Event event;
@@ -895,20 +1054,28 @@ static void App_menu(void) {
 				}
 				
 				if (event.jbutton.button==JOY_B) { // BACK
+					if (current!=app.current) {
+						current = app.current;
+						dirty = 1;
+					}
+					else {
+						in_menu = 0;
+					}
+				}
+				else if (event.jbutton.button==JOY_A) { // SELECT
+					if (current!=app.current) {
+						drastic_save_state(0);
+						App_set(current);
+						Settings_save();
+						preload_game();
+					}
 					in_menu = 0;
 				}
-				else if (event.jbutton.button==JOY_A) { // SELECt
+				else if (event.jbutton.button==JOY_Y && current==app.current) { // SAVE
 					drastic_save_state(0);
-					App_set(current);
-					Settings_save();
-					preload_game();
 					in_menu = 0;
 				}
-				else if (event.jbutton.button==JOY_Y) { // SAVE
-					drastic_save_state(0);
-					in_menu = 0;
-				}
-				else if (event.jbutton.button==JOY_X) { // LOAD
+				else if (event.jbutton.button==JOY_X && current==app.current) { // LOAD
 					drastic_load_state(0);
 					in_menu = 0;
 				}
@@ -918,10 +1085,16 @@ static void App_menu(void) {
 					drastic_quit();
 					in_menu = 0;
 				}
-				else if (event.jbutton.button==JOY_SELECT) {
+				else if (event.jbutton.button==JOY_SELECT && current==app.current) {
 					preloader.reset = 1;
 					preload_game();
 					in_menu = 0;
+				}
+				
+				// TODO: tmp
+				if (event.jbutton.button==JOY_L1) { // capture
+					capture = 1;
+					dirty = 1;
 				}
 			}
 			else if (event.type==SDL_JOYBUTTONUP) {
@@ -937,9 +1110,11 @@ static void App_menu(void) {
 			App_preview(current,0);
 			App_preview(current,1);
 			
+			// screens and gradient
 			App_render();
-			real_SDL_RenderCopy(app.renderer, overlay, NULL, NULL);
+			real_SDL_RenderCopy(app.renderer, app.overlay, NULL, NULL);
 			
+			// game name
 			char name[MAX_FILE];
 			App_getDisplayName(app.items[current], name);
 	
@@ -947,27 +1122,97 @@ static void App_menu(void) {
 			SDL_Surface* lines[MAX_LINES] = {0};
 			int line_count = App_wrap(app.font, name, lines, MAX_LINES);
 			
-			int line_height = 24 * FONT_SCALE;
+			int line_height = 48;
 			int h = line_count * line_height;
-			int y = 0;
+			int x = 0;
+			int y = -10;
 			for (int i=0; i<line_count; i++) {
 				SDL_Surface* line = lines[i];
 				SDL_Texture* texture = SDL_CreateTextureFromSurface(app.renderer, line);
 				SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
-				real_SDL_RenderCopy(app.renderer, texture, NULL, &(SDL_Rect){0,y,line->w,line->h});
+				real_SDL_RenderCopy(app.renderer, texture, NULL, &(SDL_Rect){x,y,line->w,line->h});
 				SDL_FreeSurface(line);
 				SDL_DestroyTexture(texture);
 				lines[i] = NULL;
 				y += line_height;
 			}
 			
+			// hints
+			y += 12;
+
+			// y = SCREEN_HEIGHT - 36;
+			// SDL_SetRenderDrawColor(app.renderer, 0x0,0x0,0x0,0x80);
+			// SDL_RenderFillRect(app.renderer, &(SDL_Rect){0,y-3,SCREEN_WIDTH,36+3});
+			
+			if (current==app.current) {
+				x += App_button("Y","Save", x,y);
+				x += 16;
+				x += App_button("X","Load", x,y);
+				
+				// pin right
+				x = -3;
+				x -= App_button("SELECT","Reset", x,y);
+				x -= 16;
+			}
+			else {
+				x += App_button("B","Back", x,y);
+				x += 16;
+				x += App_button("A","Play", x,y);
+			}
+			
+			// battery
+			x = 405;
+			y = 5;
+			// SDL_SetRenderDrawColor(app.renderer, 0xa6,0xa6,0xa6,0xff);
+			SDL_SetRenderDrawColor(app.renderer, 0xff,0xff,0xff,0xff);
+			SDL_RenderFillRect(app.renderer, &(SDL_Rect){x,y,68,32});
+			SDL_RenderFillRect(app.renderer, &(SDL_Rect){x+68,y+8,4,16});
+			
+			// corners
+			SDL_SetRenderDrawColor(app.renderer, 0x0,0x0,0x0,0x80);
+			const SDL_Point points[6] = {
+				{x,y},
+				{x+67,y},
+				{x,y+31},
+				{x+67,y+31},
+				{x+71,y+8},
+				{x+71,y+23},
+			};
+			SDL_RenderDrawPoints(app.renderer, points, 6);
+
+			int i = App_getBattery();
+			char bat[8];
+			if (i==100) strcpy(bat, "FULL");
+			else sprintf(bat, "%i%%", i);
+			tmp = TTF_RenderUTF8_Blended(app.mini, bat, black);
+			SDL_Texture* texture = SDL_CreateTextureFromSurface(app.renderer, tmp);
+			SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+			int w = tmp->w;
+			real_SDL_RenderCopy(app.renderer, texture, NULL, &(SDL_Rect){x+64-w,y+1,tmp->w,tmp->h});
+			SDL_FreeSurface(tmp);
+			SDL_DestroyTexture(texture);
+			
+			if (App_isCharging()) {
+				tmp = TTF_RenderUTF8_Blended(app.bolt, FAUX_BOLT, white);
+				SDL_Texture* texture = SDL_CreateTextureFromSurface(app.renderer, tmp);
+				SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+				real_SDL_RenderCopy(app.renderer, texture, NULL, &(SDL_Rect){x-tmp->w+6,y-6,tmp->w,tmp->h});
+				SDL_FreeSurface(tmp);
+				SDL_DestroyTexture(texture);
+			}
+			
+			// flip
 			real_SDL_RenderPresent(app.renderer);
+			
+			if (capture) {
+				App_capture();
+				capture = 0;
+			}
+			
 			SDL_Delay(16); 
 		}
 	}
 	
-	SDL_DestroyTexture(overlay);
-
 	// drastic_audio_pause(0);
 }
 

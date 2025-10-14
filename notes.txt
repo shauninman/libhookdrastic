@@ -1,5 +1,4 @@
-- menu faux sleep after delay (unless charging)
-- faux sleep on POWER
+- true sleep
 - poweroff on long press
 
 -----------------------------------------------

@@ -1,6 +1,7 @@
 - mark menu as dirty when waking from sleep?
 	maybe just if (Device_handleEvent()) dirty = 1;?
-
+- add htop and taskset to tina image
+- pin hot thread to a specific core?
 
 BUGS
 - sometimes audio doesn't return after sleep?

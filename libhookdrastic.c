@@ -21,6 +21,7 @@
 #define GAMES_PATH 		SDCARD_PATH "/games"
 #define DRASTIC_PATH 	SDCARD_PATH "/drastic"
 #define HOOK_PATH		DRASTIC_PATH "/hook"
+#define USERDATA_PATH	SDCARD_PATH "/userdata"
 
 #define BAT_PATH 		"/sys/class/power_supply/axp2202-battery/"
 #define USB_PATH 		"/sys/class/power_supply/axp2202-usb/"
@@ -111,7 +112,7 @@ static struct {
 	.spread = 1,
 };
 
-#define SETTINGS_PATH HOOK_PATH "/settings.bin"
+#define SETTINGS_PATH USERDATA_PATH "/settings.bin"
 static void Settings_load(void) {
 	if (access(SETTINGS_PATH, F_OK)!=0) return;
 	
@@ -193,6 +194,7 @@ static int (*real_SDL_OpenAudio)(SDL_AudioSpec *desired, SDL_AudioSpec *obtained
 static int (*real_SDL_PollEvent)(SDL_Event*) = NULL;
 
 static int (*real__libc_start_main)(int (*main)(int,char**,char**), int argc, char **ubp_av, void (*init)(void), void (*fini)(void), void (*rtld_fini)(void), void *stack_end) = NULL;
+static int (*real__snprintf_chk)(char *s, size_t maxlen, int flag, size_t slen, const char *fmt, ...) = NULL;
 static void (*real_exit)(int) __attribute__((noreturn)) = NULL;
 static void (*real__exit)(int) __attribute__((noreturn)) = NULL;
 static int (*real_system)(const char *) = NULL;
@@ -412,7 +414,7 @@ static void drastic_load_state(int slot) {
 	drastic_load_state_t d_load_state = GET_PFN(app.base + 0x000746f0); // nm ./drastic | grep load_state
 	
 	char path[MAX_PATH];
-	sprintf(path, DRASTIC_PATH "/savestates/%s-%i.sav", app.game_name, slot);
+	sprintf(path, USERDATA_PATH "/states/%s.st%i", app.game_name, slot);
 
 	d_load_state(sys, path, NULL,NULL,0);
 }
@@ -423,9 +425,9 @@ static void drastic_save_state(int slot) {
 	drastic_save_state_t d_save_state = GET_PFN(app.base + 0x00074da0); // nm ./drastic | grep save_state
 	
 	char name[MAX_FILE];
-	sprintf(name, "%s-%i.sav", app.game_name, slot);
+	sprintf(name, "%s.st%i", app.game_name, slot);
 	
-	d_save_state(sys, DRASTIC_PATH "/savestates/", name, NULL,NULL);
+	d_save_state(sys, USERDATA_PATH "/states/", name, NULL,NULL);
 }
 static void drastic_quit(void) {
 	drastic_await_save();
@@ -726,10 +728,6 @@ static int App_sort(const void* a, const void* b) {
     return strcasecmp(i, j);
 }
 
-// TODO: App_set/next/prev are a bad idea
-// I'm trying to use them for state and UI
-// this results in saving the current game's
-// state over the incoming game's state
 static void App_set(int i) {
 	if (i>=app.count) i -= app.count;
 	if (i<0) i += app.count;
@@ -748,12 +746,6 @@ static void App_set(int i) {
 	SDL_Log("settings.game: %s", settings.game);
 	SDL_Log("app.game_path: %s", app.game_path);
 	SDL_Log("app.game_name: %s", app.game_name);
-}
-static void App_next(void) {
-	App_set(app.current+1);
-}
-static void App_prev(void) {
-	App_set(app.current-1);
 }
 
 static void App_screenshot(int current, int screen) {
@@ -1062,7 +1054,6 @@ static int App_button(const char* button, const char* hint, int x, int y) {
 	return tw;
 }
 static void App_menu(void) {
-	// drastic_audio_pause(1);
 	putString(CPU_PATH "scaling_setspeed", FREQ_MENU);
 	
 	static int last_battery = 0;
@@ -1307,7 +1298,6 @@ static void App_menu(void) {
 	}
 	
 	putString(CPU_PATH "scaling_setspeed", FREQ_GAME);
-	// drastic_audio_pause(0);
 }
 
 // --------------------------------------------
@@ -1454,6 +1444,17 @@ int system(const char *command) {
 	return real_system(command);
 }
 
+int __snprintf_chk(char *s, size_t maxlen, int flag, size_t slen, const char *fmt, ...) {
+	// hooked to repath save data
+    if (fmt && strcmp(fmt, "%s%cbackup%c%s.dsv") == 0) return real__snprintf_chk(s, maxlen, flag, slen, USERDATA_PATH "/saves/%s.sram", app.game_name);
+	
+    va_list ap;
+    va_start(ap, fmt);
+    int r = __vsnprintf_chk(s, maxlen, flag, slen, fmt, ap);
+    va_end(ap);
+    return r;
+}
+
 static int pick_main(struct dl_phdr_info *i, size_t s, void *out) {
 	(void)s;
 	if (!i->dlpi_name || !i->dlpi_name[0]) {
@@ -1471,6 +1472,7 @@ static inline uintptr_t find_exe_base(void) {
 static void resolve_real(void) {
 	// hook glibc? functions
 	real__libc_start_main = dlsym(RTLD_NEXT, "__libc_start_main");
+	real__snprintf_chk = dlsym(RTLD_NEXT, "__snprintf_chk");
 	real_exit  = dlsym(RTLD_NEXT, "exit");
 	real__exit = dlsym(RTLD_NEXT, "_exit");
 	real_system = dlsym(RTLD_NEXT, "system");

@@ -19,11 +19,10 @@
 #define CEIL_TO(x, n) (((x) + (n) - 1) / (n) * (n))
 #define NUMBER_OF(items) (sizeof(items) / sizeof((items)[0]))
 
-
 #define SDCARD_PATH		"/mnt/SDCARD"
 #define GAMES_PATH 		SDCARD_PATH "/games"
 #define SYSTEM_PATH 	SDCARD_PATH "/system"
-#define HOOK_PATH		SYSTEM_PATH "/hook"
+#define ASSETS_PATH		SYSTEM_PATH "/assets"
 #define USERDATA_PATH	SDCARD_PATH "/userdata"
 
 #define BAT_PATH 		"/sys/class/power_supply/axp2202-battery/"
@@ -92,7 +91,6 @@ static struct {
 	SDL_Rect rects[2];
 	TTF_Font* font;
 	TTF_Font* mini;
-	TTF_Font* bolt;
 	
 	int count;
 	int current;
@@ -209,6 +207,7 @@ static int (*real_SDL_OpenAudio)(SDL_AudioSpec *desired, SDL_AudioSpec *obtained
 static int (*real_SDL_PollEvent)(SDL_Event*) = NULL;
 
 static int (*real__libc_start_main)(int (*main)(int,char**,char**), int argc, char **ubp_av, void (*init)(void), void (*fini)(void), void (*rtld_fini)(void), void *stack_end) = NULL;
+static int (*real__sprintf_chk)(char *s, int flag, size_t slen, const char *fmt, ...) = NULL;
 static int (*real__snprintf_chk)(char *s, size_t maxlen, int flag, size_t slen, const char *fmt, ...) = NULL;
 static void (*real_exit)(int) __attribute__((noreturn)) = NULL;
 static void (*real__exit)(int) __attribute__((noreturn)) = NULL;
@@ -653,14 +652,20 @@ static int Device_handleEvent(SDL_Event* event) {
 		}
 		
 		if (event->jbutton.button==JOY_L2) {
-			settings.cropped = !settings.cropped;
-			App_sync(1);
-			return 1;
+			if (menu_down) {
+				settings.cropped = !settings.cropped;
+				App_sync(1);
+				menu_combo = 1;
+				return 1;
+			}
 		}
 		else if (event->jbutton.button==JOY_R2) {
-			settings.spread = !settings.spread;
-			App_sync(1);
-			return 1;
+			if (menu_down) {
+				settings.spread = !settings.spread;
+				App_sync(1);
+				menu_combo = 1;
+				return 1;
+			}
 		}
 		
 		if (event->jbutton.button==JOY_VOLUP) {
@@ -774,7 +779,7 @@ static void App_screenshot(int current, int screen) {
 	
 	char path[MAX_PATH];
 	sprintf(path, USERDATA_PATH "/screenshots/%s-%i.bmp", game_name, screen);
-	SDL_Log("screenshot: %s", path);
+	// SDL_Log("screenshot: %s", path);
 	
 	void *pixels = NULL;
 	int pitch = 0;
@@ -804,9 +809,9 @@ static void App_preview(int current, int screen) {
 	
 	char path[MAX_PATH];
 	sprintf(path, USERDATA_PATH "/screenshots/%s-%i.bmp", game_name, screen);
-	if (access(path, F_OK)!=0) sprintf(path, HOOK_PATH "/screenshot-%i.png", screen);
+	if (access(path, F_OK)!=0) sprintf(path, ASSETS_PATH "/screenshot-%i.png", screen);
 
-	SDL_Log("preview: %s", path);
+	// SDL_Log("preview: %s", path);
 	SDL_Surface* tmp = IMG_Load(path);
 
 	int w, h;
@@ -827,7 +832,7 @@ static void App_preview(int current, int screen) {
 	SDL_FreeSurface(tmp);
 }
 static  int App_capture(void) {
-	SDL_Log("capture");
+	// SDL_Log("capture");
 	SDL_Surface *tmp = SDL_CreateRGBSurfaceWithFormat(0, SCREEN_WIDTH, SCREEN_HEIGHT, 32, SDL_PIXELFORMAT_ARGB8888);
 	SDL_RenderReadPixels(app.renderer, NULL, SDL_PIXELFORMAT_ARGB8888, tmp->pixels, tmp->pitch);
 	SDL_SaveBMP(tmp, "/tmp/capture.bmp");
@@ -851,7 +856,7 @@ static void App_init(void) {
 		struct dirent* entry;
 		while ((entry=readdir(dir))!=NULL) {
 			if (entry->d_name[0]=='.') continue;
-			// TODO: ignore folders
+			if (entry->d_type==DT_DIR) continue;
 			
 			if (app.count>=app.capacity) {
 				app.capacity *= 2;
@@ -877,9 +882,8 @@ static void App_init(void) {
 	App_set(app.current);
 	
 	TTF_Init();
-	app.font = TTF_OpenFont(HOOK_PATH "/Inter_24pt-BlackItalic.ttf", 48);
-	app.mini = TTF_OpenFont(HOOK_PATH "/Inter_24pt-Black.ttf", 24);
-	app.bolt = TTF_OpenFont(HOOK_PATH "/Inter_24pt-BoldItalic.ttf", 80);
+	app.font = TTF_OpenFont(ASSETS_PATH "/Inter_24pt-BlackItalic.ttf", 48);
+	app.mini = TTF_OpenFont(ASSETS_PATH "/Inter_24pt-Black.ttf", 24);
 	
 	app.bat = open(BAT_PATH "capacity", O_RDONLY);
 	app.usb = open(USB_PATH "online", O_RDONLY);
@@ -898,7 +902,6 @@ static void App_quit(void) {
 	close(app.bat);
 	close(app.usb);
 	
-	TTF_CloseFont(app.bolt);
 	TTF_CloseFont(app.mini);
 	TTF_CloseFont(app.font);
 	TTF_Quit();
@@ -915,7 +918,7 @@ static void App_render(void) {
 	real_SDL_RenderCopy(app.renderer, app.screens[0], NULL, &app.rects[0]);
 	real_SDL_RenderCopy(app.renderer, app.screens[1], NULL, &app.rects[1]);
 }
-static  int App_wrap(TTF_Font* font, char* text, SDL_Surface** lines, int max_lines) {
+static int App_wrap(TTF_Font* font, char* text, SDL_Surface** lines, int max_lines) {
 	int line_count = 0;
 
 	char line[1024] = {0};
@@ -1057,6 +1060,127 @@ static int App_button(const char* button, const char* hint, int x, int y) {
 	SDL_DestroyTexture(texture);
 	
 	return tw;
+}
+static int App_battery(int x, int y, int battery, int is_charging) {
+	if (battery<=10) SDL_SetRenderDrawColor(app.renderer, RED_TRIAD,0xff);
+	else if (battery<=20) SDL_SetRenderDrawColor(app.renderer, YELLOW_TRIAD,0xff);
+	else if (battery>=100) SDL_SetRenderDrawColor(app.renderer, GREEN_TRIAD,0xff);
+	else SDL_SetRenderDrawColor(app.renderer, WHITE_TRIAD,0xff);
+
+	x = 414;
+	y = 5;
+
+	int w = CEIL_TO(battery,20) * 40 / 100;
+	
+	const SDL_Rect rects[] = {
+		// body
+		{x+ 0,y+ 1, 1,30},
+		{x+ 1,y+ 0, 3,32},
+		{x+ 4,y+ 0,50, 4},
+		{x+ 4,y+28,50, 4},
+		{x+54,y+ 0, 3,32},
+		{x+57,y+ 1, 1,30},
+		// cap
+		{x+58,y+ 8, 3,16},
+		{x+61,y+ 9, 1,14},
+		// fill
+		{x+  8,y+ 9, 1,14},
+		{x+  9,y+ 8, w,16},
+		{x+w+9,y+ 9, 1,14},
+	};
+	SDL_RenderFillRects(app.renderer, rects, NUMBER_OF(rects));
+
+	// antialias
+	if (battery<=10) SDL_SetRenderDrawColor(app.renderer, RED_TRIAD,0x80);
+	else if (battery<=20) SDL_SetRenderDrawColor(app.renderer, YELLOW_TRIAD,0x80);
+	else if (battery>=100) SDL_SetRenderDrawColor(app.renderer, GREEN_TRIAD,0x80);
+	else SDL_SetRenderDrawColor(app.renderer, WHITE_TRIAD,0x80);
+	
+	const SDL_Point points[] = {
+		// outer
+		{x+ 0,y+ 0},
+		{x+57,y+ 0},
+		{x+ 0,y+31},
+		{x+57,y+31},
+		// cap
+		{x+61,y+ 8},
+		{x+61,y+23},
+		// inner
+		{x+ 4,y+ 4},
+		{x+53,y+ 4},
+		{x+ 4,y+27},
+		{x+53,y+27},
+		// fill
+		{x+  8,y+ 8},
+		{x+w+9,y+ 8},
+		{x+  8,y+23},
+		{x+w+9,y+23},
+	};
+	SDL_RenderDrawPoints(app.renderer, points, NUMBER_OF(points));
+
+	if (is_charging) {
+		x -= 24;
+		y += 6;
+		
+		if (battery<=10) SDL_SetRenderDrawColor(app.renderer, RED_TRIAD,0xff);
+		else if (battery<=20) SDL_SetRenderDrawColor(app.renderer, YELLOW_TRIAD,0xff);
+		else if (battery>=100) SDL_SetRenderDrawColor(app.renderer, GREEN_TRIAD,0xff);
+		else SDL_SetRenderDrawColor(app.renderer, WHITE_TRIAD,0xff);
+		
+		const SDL_Rect rects[] = {
+			// top left
+			{x+ 6,y+ 0, 6,2},
+			{x+ 5,y+ 2, 6,2},
+			{x+ 4,y+ 4, 6,2},
+			{x+ 3,y+ 6, 6,2},
+			// middle
+			{x+ 9,y+ 7,10,1},
+			{x+ 2,y+ 8,16,2},
+			{x+ 1,y+10,16,2},
+			{x+ 0,y+12,10,1},
+			// bottom right
+			{x+10,y+12, 6,2},
+			{x+ 9,y+14, 6,2},
+			{x+ 8,y+16, 6,2},
+			{x+ 7,y+18, 6,2},
+			
+		};
+		SDL_RenderFillRects(app.renderer, rects, NUMBER_OF(rects));
+		
+		// antialias
+		if (battery<=10) SDL_SetRenderDrawColor(app.renderer, RED_TRIAD,0x80);
+		else if (battery<=20) SDL_SetRenderDrawColor(app.renderer, YELLOW_TRIAD,0x80);
+		else if (battery>=100) SDL_SetRenderDrawColor(app.renderer, GREEN_TRIAD,0x80);
+		else SDL_SetRenderDrawColor(app.renderer, WHITE_TRIAD,0x80);
+	
+		const SDL_Point points[] = {
+			// top left
+			{x+ 5,y+ 1},
+			{x+ 4,y+ 3},
+			{x+ 3,y+ 5},
+			{x+ 2,y+ 7},
+			{x+ 1,y+ 9},
+			{x+ 0,y+11},
+			// top right
+			{x+12,y+ 0},
+			{x+11,y+ 2},
+			{x+10,y+ 4},
+			{x+ 9,y+ 6},
+			// bottom left
+			{x+ 9,y+13},
+			{x+ 8,y+15},
+			{x+ 7,y+17},
+			{x+ 6,y+19},
+			// bottom right
+			{x+18,y+ 8},
+			{x+17,y+10},
+			{x+16,y+12},
+			{x+15,y+14},
+			{x+14,y+16},
+			{x+13,y+18},
+		};
+		SDL_RenderDrawPoints(app.renderer, points, NUMBER_OF(points));
+	}
 }
 static void App_menu(void) {
 	putString(CPU_PATH "scaling_setspeed", FREQ_MENU);
@@ -1219,76 +1343,8 @@ static void App_menu(void) {
 			int x,y,w,h;
 			
 			// battery
-			{
-				// battery = 100;
-				if (battery<=10) SDL_SetRenderDrawColor(app.renderer, RED_TRIAD,0xff);
-				else if (battery<=20) SDL_SetRenderDrawColor(app.renderer, YELLOW_TRIAD,0xff);
-				else if (battery>=100) SDL_SetRenderDrawColor(app.renderer, GREEN_TRIAD,0xff);
-				else SDL_SetRenderDrawColor(app.renderer, WHITE_TRIAD,0xff);
-
-				x = 414;
-				y = 5;
+			App_battery(414,5, battery,is_charging);
 			
-				w = CEIL_TO(battery,20) * 40 / 100;
-			
-				const SDL_Rect rects[] = {
-					// body
-					{x+ 0,y+ 1, 1,30},
-					{x+ 1,y+ 0, 3,32},
-					{x+ 4,y+ 0,50, 4},
-					{x+ 4,y+28,50, 4},
-					{x+54,y+ 0, 3,32},
-					{x+57,y+ 1, 1,30},
-					// cap
-					{x+58,y+ 8, 3,16},
-					{x+61,y+ 9, 1,14},
-					// fill
-					{x+  8,y+ 9, 1,14},
-					{x+  9,y+ 8, w,16},
-					{x+w+9,y+ 9, 1,14},
-				};
-				SDL_RenderFillRects(app.renderer, rects, NUMBER_OF(rects));
-			
-				// corners
-				SDL_SetRenderDrawColor(app.renderer, WHITE_TRIAD,0x80);
-				const SDL_Point points[] = {
-					// outer
-					{x+ 0,y+ 0},
-					{x+57,y+ 0},
-					{x+ 0,y+31},
-					{x+57,y+31},
-					// cap
-					{x+61,y+ 8},
-					{x+61,y+23},
-					// inner
-					{x+ 4,y+ 4},
-					{x+53,y+ 4},
-					{x+ 4,y+27},
-					{x+53,y+27},
-					// fill
-					{x+  8,y+ 8},
-					{x+w+9,y+ 8},
-					{x+  8,y+23},
-					{x+w+9,y+23},
-				};
-				SDL_RenderDrawPoints(app.renderer, points, NUMBER_OF(points));
-			
-				if (is_charging) {
-					SDL_Color color;
-					if (battery<=10) color = RED_COLOR;
-					else if (battery<=20) color = YELLOW_COLOR;
-					else if (battery>=100) color = GREEN_COLOR;
-					else color = WHITE_COLOR;
-			
-					tmp = TTF_RenderUTF8_Blended(app.bolt, FAUX_BOLT, color);
-					SDL_Texture* texture = SDL_CreateTextureFromSurface(app.renderer, tmp);
-					SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
-					real_SDL_RenderCopy(app.renderer, texture, NULL, &(SDL_Rect){x-tmp->w+6,y-6,tmp->w,tmp->h});
-					SDL_FreeSurface(tmp);
-					SDL_DestroyTexture(texture);
-				}
-			}
-
 			// game name
 			char name[MAX_FILE];
 			App_getDisplayName(app.items[current], name);
@@ -1567,13 +1623,31 @@ int system(const char *command) {
 
 int __snprintf_chk(char *s, size_t maxlen, int flag, size_t slen, const char *fmt, ...) {
 	// hooked to repath save data
-    if (fmt && strcmp(fmt, "%s%cbackup%c%s.dsv") == 0) return real__snprintf_chk(s, maxlen, flag, slen, USERDATA_PATH "/saves/%s.sram", app.game_name);
-	
-    va_list ap;
-    va_start(ap, fmt);
-    int r = __vsnprintf_chk(s, maxlen, flag, slen, fmt, ap);
-    va_end(ap);
-    return r;
+	if (fmt && strcmp(fmt, "%s%cbackup%c%s.dsv")==0) return real__snprintf_chk(s, maxlen, flag, slen, USERDATA_PATH "/saves/%s.sram", app.game_name);
+
+	va_list ap;
+	va_start(ap, fmt);
+	int r = __vsnprintf_chk(s, maxlen, flag, slen, fmt, ap);
+	va_end(ap);
+	return r;
+}
+int __sprintf_chk(char *s, int flag, size_t slen, const char *fmt, ...) {
+	// hooked to repath official bios (but not clean room bios)
+	if (fmt && strcmp(fmt, "%s%csystem%c%s")==0)  {
+		va_list ap;
+		va_start(ap, fmt);
+		va_arg(ap, const char*); va_arg(ap, int); va_arg(ap, int); // skip %s %c %c
+		const char* bios = va_arg(ap, const char*);	// %s
+		va_end(ap);
+		
+		if (bios && strncmp(bios, "nds_",4)==0) return real__sprintf_chk(s, flag, slen, SDCARD_PATH "/bios/%s", bios);
+	}
+
+	va_list ap;
+	va_start(ap, fmt);
+	int r = __vsprintf_chk(s, flag, slen, fmt, ap);
+	va_end(ap);
+	return r;
 }
 
 static int pick_main(struct dl_phdr_info *i, size_t s, void *out) {
@@ -1593,6 +1667,7 @@ static inline uintptr_t find_exe_base(void) {
 static void resolve_real(void) {
 	// hook glibc? functions
 	real__libc_start_main = dlsym(RTLD_NEXT, "__libc_start_main");
+	real__sprintf_chk = dlsym(RTLD_NEXT, "__sprintf_chk");
 	real__snprintf_chk = dlsym(RTLD_NEXT, "__snprintf_chk");
 	real_exit  = dlsym(RTLD_NEXT, "exit");
 	real__exit = dlsym(RTLD_NEXT, "_exit");

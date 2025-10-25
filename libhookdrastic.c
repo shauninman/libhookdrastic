@@ -22,8 +22,8 @@
 
 #define SDCARD_PATH		"/mnt/SDCARD"
 #define GAMES_PATH 		SDCARD_PATH "/games"
-#define DRASTIC_PATH 	SDCARD_PATH "/drastic"
-#define HOOK_PATH		DRASTIC_PATH "/hook"
+#define SYSTEM_PATH 	SDCARD_PATH "/system"
+#define HOOK_PATH		SYSTEM_PATH "/hook"
 #define USERDATA_PATH	SDCARD_PATH "/userdata"
 
 #define BAT_PATH 		"/sys/class/power_supply/axp2202-battery/"
@@ -560,10 +560,10 @@ static void App_sync(int force) {
 		app.rects[1].y += oy;
 	}
 	
-	SDL_Log("screens[0]:{%i,%i,%i,%i} screens[1]:{%i,%i,%i,%i}", 
-		app.rects[0].x, app.rects[0].y, app.rects[0].w, app.rects[0].h,
-		app.rects[1].x, app.rects[1].y, app.rects[1].w, app.rects[1].h
-	);
+	// SDL_Log("screens[0]:{%i,%i,%i,%i} screens[1]:{%i,%i,%i,%i}",
+	// 	app.rects[0].x, app.rects[0].y, app.rects[0].w, app.rects[0].h,
+	// 	app.rects[1].x, app.rects[1].y, app.rects[1].w, app.rects[1].h
+	// );
 	
 	app.synced = 1;
 }
@@ -587,6 +587,7 @@ static void Device_suspend(void) {
 	Settings_setVolume(settings.volume);
 }
 static void Device_goodbye(void) {
+	SDL_SetRenderDrawColor(app.renderer, BLACK_TRIAD,0xff);
 	real_SDL_RenderClear(app.renderer);
 	const char* lines[] = {
 		"Saving &",
@@ -850,6 +851,7 @@ static void App_init(void) {
 		struct dirent* entry;
 		while ((entry=readdir(dir))!=NULL) {
 			if (entry->d_name[0]=='.') continue;
+			// TODO: ignore folders
 			
 			if (app.count>=app.capacity) {
 				app.capacity *= 2;
@@ -904,9 +906,11 @@ static void App_quit(void) {
 	Settings_save();
 }
 static void App_render(void) {
-	if (!app.renderer || !app.screens[0] || !app.screens[1]) return;
+	if (!app.renderer) return;
 	SDL_SetRenderDrawColor(app.renderer, BLACK_TRIAD,0xff);
 	real_SDL_RenderClear(app.renderer);
+	
+	if (!app.screens[0] || !app.screens[1]) return;
 	App_sync(0);
 	real_SDL_RenderCopy(app.renderer, app.screens[0], NULL, &app.rects[0]);
 	real_SDL_RenderCopy(app.renderer, app.screens[1], NULL, &app.rects[1]);
@@ -933,9 +937,6 @@ static  int App_wrap(TTF_Font* font, char* text, SDL_Surface** lines, int max_li
 			if (strlen(line) > 0 && line_count < max_lines) {
 				lines[line_count++] = TTF_RenderUTF8_Blended(font, line, WHITE_COLOR);
 				line[0] = '\0';
-				
-				// color += 1;
-				// color %= MAX_COLORS;
 			}
 			while (isspace(*p)) p++;
 			continue;
@@ -1076,7 +1077,6 @@ static void App_menu(void) {
 		uint32_t* d = tmp->pixels;
 		int total = w * h;
 		for (int i=0; i<total; i++,d++) {
-			// *d = ((total - i) * 224 / total) << 24; // 87.5% to 0%
 			*d = (64 + ((total - i) * 160 / total)) << 24; // 87.5% to 25%
 		}
 
@@ -1093,6 +1093,7 @@ static void App_menu(void) {
 		SDL_FreeSurface(tmp);
 	}
 	
+	int selected = 0;
 	int capture = 0;
 	int dirty = 1;
 	int in_menu = 1;
@@ -1107,12 +1108,23 @@ static void App_menu(void) {
 			if (Device_handleEvent(&event)) continue;
 			
 			if (event.type==SDL_JOYBUTTONDOWN) {
+				if (event.jbutton.button==JOY_UP) {
+					selected -= 1;
+					dirty = 1;
+				}
+				else if (event.jbutton.button==JOY_DOWN) {
+					selected += 1;
+					dirty = 1;
+				}
+				
 				if (event.jbutton.button==JOY_RIGHT) {
+					selected = 0;
 					current += 1;
 					if (current>=app.count) current -= app.count;
 					dirty = 1;
 				}
 				else if (event.jbutton.button==JOY_LEFT) {
+					selected = 0;
 					current -= 1;
 					if (current<0) current += app.count;
 					dirty = 1;
@@ -1121,6 +1133,7 @@ static void App_menu(void) {
 				if (event.jbutton.button==JOY_B) { // BACK
 					if (current!=app.current) {
 						current = app.current;
+						selected = 0;
 						dirty = 1;
 					}
 					else {
@@ -1128,31 +1141,42 @@ static void App_menu(void) {
 					}
 				}
 				else if (event.jbutton.button==JOY_A) { // SELECT
-					if (current!=app.current) {
-						drastic_save_state(0);
-						App_set(current);
-						Settings_save();
-						preload_game();
+					if (current==app.current) {
+						if (selected==3) { // BACK
+							// buh
+						}
+						else if (selected==0) { // SAVE
+							drastic_save_state(0);
+						}
+						else if (selected==1) { // LOAD
+							drastic_load_state(0);
+						}
+						else if (selected==2) { // RESET
+							preloader.reset = 1;
+							preload_game();
+						}
+						in_menu = 0;
 					}
-					in_menu = 0;
-				}
-				else if (event.jbutton.button==JOY_Y && current==app.current) { // SAVE
-					drastic_save_state(0);
-					in_menu = 0;
-				}
-				else if (event.jbutton.button==JOY_X && current==app.current) { // LOAD
-					drastic_load_state(0);
-					in_menu = 0;
+					else {
+						if (selected==1) { // BACK
+							current = app.current;
+							selected = 0;
+							dirty = 1;
+						}
+						else if (selected==0) { // LOAD
+							drastic_save_state(0);
+							App_set(current);
+							Settings_save();
+							preload_game();
+							
+							in_menu = 0;
+						}
+					}
 				}
 				
-				if (event.jbutton.button==JOY_START) {
+				if (event.jbutton.button==JOY_START) { // TODO: tmp
 					drastic_save_state(0);
 					drastic_quit();
-					in_menu = 0;
-				}
-				else if (event.jbutton.button==JOY_SELECT && current==app.current) {
-					preloader.reset = 1;
-					preload_game();
 					in_menu = 0;
 				}
 				
@@ -1189,80 +1213,82 @@ static void App_menu(void) {
 			
 			// screens and gradient
 			App_render();
+			
 			real_SDL_RenderCopy(app.renderer, app.overlay, NULL, NULL);
 			
 			int x,y,w,h;
 			
 			// battery
-			// battery = 100;
-			if (battery<=10) SDL_SetRenderDrawColor(app.renderer, RED_TRIAD,0xff);
-			else if (battery<=20) SDL_SetRenderDrawColor(app.renderer, YELLOW_TRIAD,0xff);
-			else if (battery>=100) SDL_SetRenderDrawColor(app.renderer, GREEN_TRIAD,0xff);
-			else SDL_SetRenderDrawColor(app.renderer, WHITE_TRIAD,0xff);
+			{
+				// battery = 100;
+				if (battery<=10) SDL_SetRenderDrawColor(app.renderer, RED_TRIAD,0xff);
+				else if (battery<=20) SDL_SetRenderDrawColor(app.renderer, YELLOW_TRIAD,0xff);
+				else if (battery>=100) SDL_SetRenderDrawColor(app.renderer, GREEN_TRIAD,0xff);
+				else SDL_SetRenderDrawColor(app.renderer, WHITE_TRIAD,0xff);
 
-			x = 414;
-			y = 5;
+				x = 414;
+				y = 5;
 			
-			w = CEIL_TO(battery,20) * 40 / 100;
+				w = CEIL_TO(battery,20) * 40 / 100;
 			
-			const SDL_Rect rects[] = {
-				// body
-				{x+ 0,y+ 1, 1,30},
-				{x+ 1,y+ 0, 3,32},
-				{x+ 4,y+ 0,50, 4},
-				{x+ 4,y+28,50, 4},
-				{x+54,y+ 0, 3,32},
-				{x+57,y+ 1, 1,30},
-				// cap
-				{x+58,y+ 8, 3,16},
-				{x+61,y+ 9, 1,14},
-				// fill
-				{x+  8,y+ 9, 1,14},
-				{x+  9,y+ 8, w,16},
-				{x+w+9,y+ 9, 1,14},
-			};
+				const SDL_Rect rects[] = {
+					// body
+					{x+ 0,y+ 1, 1,30},
+					{x+ 1,y+ 0, 3,32},
+					{x+ 4,y+ 0,50, 4},
+					{x+ 4,y+28,50, 4},
+					{x+54,y+ 0, 3,32},
+					{x+57,y+ 1, 1,30},
+					// cap
+					{x+58,y+ 8, 3,16},
+					{x+61,y+ 9, 1,14},
+					// fill
+					{x+  8,y+ 9, 1,14},
+					{x+  9,y+ 8, w,16},
+					{x+w+9,y+ 9, 1,14},
+				};
+				SDL_RenderFillRects(app.renderer, rects, NUMBER_OF(rects));
 			
-			SDL_RenderFillRects(app.renderer, rects, NUMBER_OF(rects));
+				// corners
+				SDL_SetRenderDrawColor(app.renderer, WHITE_TRIAD,0x80);
+				const SDL_Point points[] = {
+					// outer
+					{x+ 0,y+ 0},
+					{x+57,y+ 0},
+					{x+ 0,y+31},
+					{x+57,y+31},
+					// cap
+					{x+61,y+ 8},
+					{x+61,y+23},
+					// inner
+					{x+ 4,y+ 4},
+					{x+53,y+ 4},
+					{x+ 4,y+27},
+					{x+53,y+27},
+					// fill
+					{x+  8,y+ 8},
+					{x+w+9,y+ 8},
+					{x+  8,y+23},
+					{x+w+9,y+23},
+				};
+				SDL_RenderDrawPoints(app.renderer, points, NUMBER_OF(points));
 			
-			// corners
-			SDL_SetRenderDrawColor(app.renderer, WHITE_TRIAD,0x80);
-			const SDL_Point points[] = {
-				// outer
-				{x+ 0,y+ 0},
-				{x+57,y+ 0},
-				{x+ 0,y+31},
-				{x+57,y+31},
-				// cap
-				{x+61,y+ 8},
-				{x+61,y+23},
-				// inner
-				{x+ 4,y+ 4},
-				{x+53,y+ 4},
-				{x+ 4,y+27},
-				{x+53,y+27},
-				// fill
-				{x+  8,y+ 8},
-				{x+w+9,y+ 8},
-				{x+  8,y+23},
-				{x+w+9,y+23},
-			};
-			SDL_RenderDrawPoints(app.renderer, points, NUMBER_OF(points));
+				if (is_charging) {
+					SDL_Color color;
+					if (battery<=10) color = RED_COLOR;
+					else if (battery<=20) color = YELLOW_COLOR;
+					else if (battery>=100) color = GREEN_COLOR;
+					else color = WHITE_COLOR;
 			
-			if (is_charging) {
-				SDL_Color color;
-				if (battery<=10) color = RED_COLOR;
-				else if (battery<=20) color = YELLOW_COLOR;
-				else if (battery>=100) color = GREEN_COLOR;
-				else color = WHITE_COLOR;
-			
-				tmp = TTF_RenderUTF8_Blended(app.bolt, FAUX_BOLT, color);
-				SDL_Texture* texture = SDL_CreateTextureFromSurface(app.renderer, tmp);
-				SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
-				real_SDL_RenderCopy(app.renderer, texture, NULL, &(SDL_Rect){x-tmp->w+6,y-6,tmp->w,tmp->h});
-				SDL_FreeSurface(tmp);
-				SDL_DestroyTexture(texture);
+					tmp = TTF_RenderUTF8_Blended(app.bolt, FAUX_BOLT, color);
+					SDL_Texture* texture = SDL_CreateTextureFromSurface(app.renderer, tmp);
+					SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+					real_SDL_RenderCopy(app.renderer, texture, NULL, &(SDL_Rect){x-tmp->w+6,y-6,tmp->w,tmp->h});
+					SDL_FreeSurface(tmp);
+					SDL_DestroyTexture(texture);
+				}
 			}
-			
+
 			// game name
 			char name[MAX_FILE];
 			App_getDisplayName(app.items[current], name);
@@ -1286,23 +1312,97 @@ static void App_menu(void) {
 				y += line_height;
 			}
 			
-			// hints
-			y += 12;
+			// relative to game name (shifts)
+			// y += 12;
+			// h = (SCREEN_HEIGHT / 2) - y;
 			
+			// center in bottom "screen"
+			y = h = SCREEN_HEIGHT / 2;
+			
+			// center in full screen
+			// y = 0;
+			// h = SCREEN_HEIGHT;
+
+			char* save_items[] = {
+				"SAVE",
+				"LOAD",
+				"RESET",
+			};
+			char* load_items[] = {
+				"LOAD",
+			};
+			
+			char** items;
+			int count;
 			if (current==app.current) {
-				x += App_button("Y","Save", x,y);
-				x += 16;
-				x += App_button("X","Load", x,y);
-				
-				// pin right
-				x = -3;
-				x -= App_button("SELECT","Reset", x,y);
-				x -= 16;
+				items = save_items;
+				count = NUMBER_OF(save_items);
 			}
 			else {
-				x += App_button("B","Back", x,y);
-				x += 16;
-				x += App_button("A","Play", x,y);
+				items = load_items;
+				count = NUMBER_OF(load_items);
+			}
+			
+			if (selected<0) selected += count;
+			selected %= count;
+			
+			TTF_SizeUTF8(app.mini, "RESET", &w, NULL);
+			w = 8 + w + 8;
+			x = (SCREEN_WIDTH - w) / 2;
+			
+			int oh = (((count-1) * 40) + 32);
+			y += (h - oh) / 2;
+			h = oh;
+			
+			x -= 8;
+			y -= 8;
+			w = 8 + w + 8;
+			h = 8 + h + 8;
+			SDL_SetRenderDrawColor(app.renderer, BLACK_TRIAD,0x60);
+			const SDL_Rect rects[] = {
+				{x+  0,y+ 1,  1,h-2},
+				{x+  1,y+ 0,w-2,h  },
+				{x+w-1,y+ 1,  1,h-2},
+			};
+			SDL_RenderFillRects(app.renderer, rects, NUMBER_OF(rects));
+			
+			w = -8 + w -8;
+			h = -8 + h -8;
+			x += 8;
+			y += 8;
+			
+			for (int i=0; i<count; i++) {
+				SDL_Color color = WHITE_COLOR;
+				if (i==selected) {
+					color = BLACK_COLOR;
+					SDL_SetRenderDrawColor(app.renderer, WHITE_TRIAD,0xff);
+					
+					const SDL_Rect rects[] = {
+						{x+  0,y+ 1,  1,30},
+						{x+  1,y+ 0,w-2,32},
+						{x+w-1,y+ 1,  1,30},
+					};
+					SDL_RenderFillRects(app.renderer, rects, NUMBER_OF(rects));
+			
+					// corners
+					SDL_SetRenderDrawColor(app.renderer, WHITE_TRIAD,0x80);
+					const SDL_Point points[] = {
+						{x+  0,y+ 0},
+						{x+w-1,y+ 0},
+						{x+  0,y+31},
+						{x+w-1,y+31},
+					};
+					SDL_RenderDrawPoints(app.renderer, points, NUMBER_OF(points));
+				}
+				
+				tmp = TTF_RenderUTF8_Blended(app.mini, items[i], color);
+				SDL_Texture* texture = SDL_CreateTextureFromSurface(app.renderer, tmp);
+				SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+				real_SDL_RenderCopy(app.renderer, texture, NULL, &(SDL_Rect){x+8,y+1,tmp->w,tmp->h});
+				SDL_FreeSurface(tmp);
+				SDL_DestroyTexture(texture);
+				
+				y += 40;
 			}
 			
 			// flip

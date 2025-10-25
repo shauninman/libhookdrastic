@@ -1,6 +1,14 @@
-- add htop and taskset to tina image
-- pin hot thread to a specific core?
 - revert to faux sleep? mem sleep is kinda buggy
+- change crop/spread buttons to combos (MENU+)
+	too many accidental presses
+- if charging at boot launch a batmon?
+	from main.sh
+	create batmon :sweat_smile:
+- pull current sd card structure
+	create userdata folder, etc
+- add htop and taskset to tina image
+	pin hot thread to a specific core?
+
 
 BUGS
 - sometimes doesn't respond to input after sleep?

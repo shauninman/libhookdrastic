@@ -1,10 +1,15 @@
-- revert to faux sleep? mem sleep is kinda buggy
+- revert to faux sleep
+	mem sleep is kinda buggy
 - batmon
+	display Charging or Full? or actual percentage?
+	draw battery?
 	dim after a few seconds or maybe even mem sleep?
 - add htop and taskset to tina image
 	pin hot thread to a specific core?
 - start breaking common utils (constants, init, drawing, settings, utils) into header only includes
-
+- cache menu bits?
+- move battery checks to separate thread?
+- draw low battery in game (in App_render)
 
 BUGS
 - sometimes doesn't respond to input after sleep?

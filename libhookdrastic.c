@@ -51,6 +51,8 @@
 #define GREEN_COLOR (SDL_Color){GREEN_TRIAD}
 #define YELLOW_COLOR (SDL_Color){YELLOW_TRIAD}
 
+#define TRIAD_ALPHA(t,a) (SDL_Color){t,a}
+
 // --------------------------------------------
 
 #define JOY_UP 		12
@@ -881,7 +883,7 @@ static void App_init(void) {
 	
 	TTF_Init();
 	app.font = TTF_OpenFont(ASSETS_PATH "/Inter_24pt-BlackItalic.ttf", 48);
-	app.mini = TTF_OpenFont(ASSETS_PATH "/Inter_24pt-Black.ttf", 24);
+	app.mini = TTF_OpenFont(ASSETS_PATH "/Inter_24pt-BlackItalic.ttf", 24);
 	
 	app.bat = open(BAT_PATH "capacity", O_RDONLY);
 	app.usb = open(USB_PATH "online", O_RDONLY);
@@ -990,125 +992,131 @@ static void App_reset(void) {
 	preload_game();
 }
 
-static int App_battery(int x, int y, int battery, int is_charging) {
-	if (battery<=10) SDL_SetRenderDrawColor(app.renderer, RED_TRIAD,0xff);
-	else if (battery<=20) SDL_SetRenderDrawColor(app.renderer, YELLOW_TRIAD,0xff);
-	else if (battery>=100) SDL_SetRenderDrawColor(app.renderer, GREEN_TRIAD,0xff);
-	else SDL_SetRenderDrawColor(app.renderer, WHITE_TRIAD,0xff);
-
-	x = 414;
-	y = 5;
-
-	int w = CEIL_TO(battery,20) * 40 / 100;
-	
-	const SDL_Rect rects[] = {
+static int AA_rect(int x, int y, int w, int h, int s, SDL_Color c) {
+	if (s==0) {
 		// body
-		{x+ 0,y+ 1, 1,30},
-		{x+ 1,y+ 0, 3,32},
-		{x+ 4,y+ 0,50, 4},
-		{x+ 4,y+28,50, 4},
-		{x+54,y+ 0, 3,32},
-		{x+57,y+ 1, 1,30},
-		// cap
-		{x+58,y+ 8, 3,16},
-		{x+61,y+ 9, 1,14},
-		// fill
-		{x+  8,y+ 9, 1,14},
-		{x+  9,y+ 8, w,16},
-		{x+w+9,y+ 9, 1,14},
-	};
-	SDL_RenderFillRects(app.renderer, rects, NUMBER_OF(rects));
-
-	// antialias
-	if (battery<=10) SDL_SetRenderDrawColor(app.renderer, RED_TRIAD,0x80);
-	else if (battery<=20) SDL_SetRenderDrawColor(app.renderer, YELLOW_TRIAD,0x80);
-	else if (battery>=100) SDL_SetRenderDrawColor(app.renderer, GREEN_TRIAD,0x80);
-	else SDL_SetRenderDrawColor(app.renderer, WHITE_TRIAD,0x80);
-	
-	const SDL_Point points[] = {
-		// outer
-		{x+ 0,y+ 0},
-		{x+57,y+ 0},
-		{x+ 0,y+31},
-		{x+57,y+31},
-		// cap
-		{x+61,y+ 8},
-		{x+61,y+23},
-		// inner
-		{x+ 4,y+ 4},
-		{x+53,y+ 4},
-		{x+ 4,y+27},
-		{x+53,y+27},
-		// fill
-		{x+  8,y+ 8},
-		{x+w+9,y+ 8},
-		{x+  8,y+23},
-		{x+w+9,y+23},
-	};
-	SDL_RenderDrawPoints(app.renderer, points, NUMBER_OF(points));
-
-	if (is_charging) {
-		x -= 24;
-		y += 6;
-		
-		if (battery<=10) SDL_SetRenderDrawColor(app.renderer, RED_TRIAD,0xff);
-		else if (battery<=20) SDL_SetRenderDrawColor(app.renderer, YELLOW_TRIAD,0xff);
-		else if (battery>=100) SDL_SetRenderDrawColor(app.renderer, GREEN_TRIAD,0xff);
-		else SDL_SetRenderDrawColor(app.renderer, WHITE_TRIAD,0xff);
-		
+		SDL_SetRenderDrawColor(app.renderer, c.r,c.g,c.b,c.a);
 		const SDL_Rect rects[] = {
-			// top left
-			{x+ 6,y+ 0, 6,2},
-			{x+ 5,y+ 2, 6,2},
-			{x+ 4,y+ 4, 6,2},
-			{x+ 3,y+ 6, 6,2},
-			// middle
-			{x+ 9,y+ 7,10,1},
-			{x+ 2,y+ 8,16,2},
-			{x+ 1,y+10,16,2},
-			{x+ 0,y+12,10,1},
-			// bottom right
-			{x+10,y+12, 6,2},
-			{x+ 9,y+14, 6,2},
-			{x+ 8,y+16, 6,2},
-			{x+ 7,y+18, 6,2},
-			
+			{x + 0, y+1,   1, h-2}, // left
+			{x + 1, y+0, w-2, h  }, // middle
+			{x+w-1, y+1,   1, h-2}, // right
 		};
 		SDL_RenderFillRects(app.renderer, rects, NUMBER_OF(rects));
 		
-		// antialias
-		if (battery<=10) SDL_SetRenderDrawColor(app.renderer, RED_TRIAD,0x80);
-		else if (battery<=20) SDL_SetRenderDrawColor(app.renderer, YELLOW_TRIAD,0x80);
-		else if (battery>=100) SDL_SetRenderDrawColor(app.renderer, GREEN_TRIAD,0x80);
-		else SDL_SetRenderDrawColor(app.renderer, WHITE_TRIAD,0x80);
-	
+		// corners
+		SDL_SetRenderDrawColor(app.renderer, c.r,c.g,c.b,c.a/2);
 		const SDL_Point points[] = {
-			// top left
-			{x+ 5,y+ 1},
-			{x+ 4,y+ 3},
-			{x+ 3,y+ 5},
-			{x+ 2,y+ 7},
-			{x+ 1,y+ 9},
-			{x+ 0,y+11},
-			// top right
-			{x+12,y+ 0},
-			{x+11,y+ 2},
-			{x+10,y+ 4},
-			{x+ 9,y+ 6},
-			// bottom left
-			{x+ 9,y+13},
-			{x+ 8,y+15},
-			{x+ 7,y+17},
-			{x+ 6,y+19},
-			// bottom right
-			{x+18,y+ 8},
-			{x+17,y+10},
-			{x+16,y+12},
-			{x+15,y+14},
-			{x+14,y+16},
-			{x+13,y+18},
+			{x + 0, y + 0}, // top left
+			{x+w-1, y + 0}, // top right
+			{x + 0, y+h-1}, // bottom left
+			{x+w-1, y+h-1}, // bottom right
 		};
 		SDL_RenderDrawPoints(app.renderer, points, NUMBER_OF(points));
+	}
+	else {
+		// outline
+		SDL_SetRenderDrawColor(app.renderer, c.r,c.g,c.b,c.a);
+		const SDL_Rect rects[] = {
+			{x + 0, y + 1,   1, h-2}, // left
+			{x + 1, y + 0, s-1, h  }, // left
+			{x + s, y + 0, w-8, s  }, // top
+			{x + s, y+h-s, w-8, s  }, // bottom
+			{x+w-s, y + 0, s-1, h  }, // right
+			{x+w-1, y + 1,   1, h-2}, // right
+		};
+		SDL_RenderFillRects(app.renderer, rects, NUMBER_OF(rects));
+		
+		// corners
+		SDL_SetRenderDrawColor(app.renderer, c.r,c.g,c.b,c.a/2);
+		const SDL_Point points[] = {
+			// outer
+			{x + 0, y + 0}, // top left
+			{x+w-1, y + 0}, // top right
+			{x + 0, y+h-1}, // bottom left
+			{x+w-1, y+h-1}, // bottom right
+			// inner
+			{x  +  s, y  +  s}, // top left
+			{x+w-s-1, y  +  s}, // top right
+			{x  +  s, y+h-s-1}, // bottom left
+			{x+w-s-1, y+h-s-1}, // bottom right
+		};
+		SDL_RenderDrawPoints(app.renderer, points, NUMBER_OF(points));
+	}
+}
+static int AA_bolt(int x, int y, SDL_Color c) {
+	const SDL_Rect rects[] = {
+		// top left
+		{x+ 6,y+ 0, 6,2},
+		{x+ 5,y+ 2, 6,2},
+		{x+ 4,y+ 4, 6,2},
+		{x+ 3,y+ 6, 6,2},
+		// middle
+		{x+ 9,y+ 7,10,1},
+		{x+ 2,y+ 8,16,2},
+		{x+ 1,y+10,16,2},
+		{x+ 0,y+12,10,1},
+		// bottom right
+		{x+10,y+12, 6,2},
+		{x+ 9,y+14, 6,2},
+		{x+ 8,y+16, 6,2},
+		{x+ 7,y+18, 6,2},
+		
+	};
+	SDL_SetRenderDrawColor(app.renderer, c.r,c.g,c.b,c.a);
+	SDL_RenderFillRects(app.renderer, rects, NUMBER_OF(rects));
+	
+	// antialias
+	const SDL_Point points[] = {
+		// top left
+		{x+ 5,y+ 1},
+		{x+ 4,y+ 3},
+		{x+ 3,y+ 5},
+		{x+ 2,y+ 7},
+		{x+ 1,y+ 9},
+		{x+ 0,y+11},
+		// top right
+		{x+12,y+ 0},
+		{x+11,y+ 2},
+		{x+10,y+ 4},
+		{x+ 9,y+ 6},
+		// bottom left
+		{x+ 9,y+13},
+		{x+ 8,y+15},
+		{x+ 7,y+17},
+		{x+ 6,y+19},
+		// bottom right
+		{x+18,y+ 8},
+		{x+17,y+10},
+		{x+16,y+12},
+		{x+15,y+14},
+		{x+14,y+16},
+		{x+13,y+18},
+	};
+	SDL_SetRenderDrawColor(app.renderer, c.r,c.g,c.b,c.a/2);
+	SDL_RenderDrawPoints(app.renderer, points, NUMBER_OF(points));
+}
+static int AA_bat(int x, int y, int battery, SDL_Color c) {
+	AA_rect(x,y,48,28, 4, c);
+	AA_rect(x+47,y+8,5,12, 0, c);
+	
+	int w = CEIL_TO(battery,20) * 30 / 100;
+	if (w>0) AA_rect(x+8,y+8,w+2,12, 0, c);
+}
+
+static int App_battery(int x, int y, int battery, int is_charging) {
+	SDL_Color c = TRIAD_ALPHA(WHITE_TRIAD,0xff);
+	if (battery<=10) c = TRIAD_ALPHA(RED_TRIAD,0xff);
+	else if (battery<=20) c = TRIAD_ALPHA(YELLOW_TRIAD,0xff);
+	else if (battery>=100) c = TRIAD_ALPHA(GREEN_TRIAD,0xff);
+	
+	AA_bat(x+2,y+2, battery, TRIAD_ALPHA(BLACK_TRIAD,0xff));
+	AA_bat(x,y, battery, c);
+
+	if (is_charging) {
+		x -= 23;
+		y += 4;
+		AA_bolt(x+2,y+2,TRIAD_ALPHA(BLACK_TRIAD,0xff));
+		AA_bolt(x,y,c);
 	}
 }
 static void App_menu(void) {
@@ -1152,7 +1160,17 @@ static void App_menu(void) {
 			
 			if (Device_handleEvent(&event)) continue;
 			
-			if (event.type==SDL_JOYBUTTONDOWN) {
+			if (event.type==SDL_FINGERUP) {
+				if (current!=app.current) { // BACK
+					current = app.current;
+					selected = 0;
+					dirty = 1;
+				}
+				else {
+					in_menu = 0;
+				}
+			}
+			else if (event.type==SDL_JOYBUTTONDOWN) {
 				if (event.jbutton.button==JOY_UP) {
 					selected -= 1;
 					dirty = 1;
@@ -1187,10 +1205,7 @@ static void App_menu(void) {
 				}
 				else if (event.jbutton.button==JOY_A) { // SELECT
 					if (current==app.current) {
-						if (selected==3) { // BACK
-							// buh
-						}
-						else if (selected==0) { // SAVE
+						if (selected==0) { // SAVE
 							App_save();
 						}
 						else if (selected==1) { // LOAD
@@ -1287,7 +1302,7 @@ static void App_menu(void) {
 			int x,y,w,h;
 			
 			// battery
-			App_battery(414,5, battery,is_charging);
+			App_battery(424,8, battery,is_charging);
 			
 			// game name
 			char name[MAX_FILE];
@@ -1305,6 +1320,11 @@ static void App_menu(void) {
 				SDL_Surface* line = lines[i];
 				SDL_Texture* texture = SDL_CreateTextureFromSurface(app.renderer, line);
 				SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+				
+				SDL_SetTextureColorMod(texture, BLACK_TRIAD);
+				real_SDL_RenderCopy(app.renderer, texture, NULL, &(SDL_Rect){x+2,y+2,line->w,line->h});
+				SDL_SetTextureColorMod(texture, WHITE_TRIAD);
+				
 				real_SDL_RenderCopy(app.renderer, texture, NULL, &(SDL_Rect){x,y,line->w,line->h});
 				SDL_FreeSurface(line);
 				SDL_DestroyTexture(texture);
@@ -1331,51 +1351,29 @@ static void App_menu(void) {
 			y += (h - oh) / 2;
 			h = oh;
 			
-			x -= 8;
-			y -= 8;
-			w = 8 + w + 8;
-			h = 8 + h + 8;
-			SDL_SetRenderDrawColor(app.renderer, BLACK_TRIAD,0x60);
-			const SDL_Rect rects[] = {
-				{x+  0,y+ 1,  1,h-2},
-				{x+  1,y+ 0,w-2,h  },
-				{x+w-1,y+ 1,  1,h-2},
-			};
-			SDL_RenderFillRects(app.renderer, rects, NUMBER_OF(rects));
-			
-			w = -8 + w -8;
-			h = -8 + h -8;
-			x += 8;
-			y += 8;
+			AA_rect(x-8,y-8,8+w+8,8+h+8, 0, TRIAD_ALPHA(BLACK_TRIAD,0x40));
 			
 			for (int i=0; i<count; i++) {
 				SDL_Color color = WHITE_COLOR;
 				if (i==selected) {
+					AA_rect(x+2,y+2,w,32, 0, TRIAD_ALPHA(BLACK_TRIAD,0xff));
+					AA_rect(x,y,w,32, 0, TRIAD_ALPHA(WHITE_TRIAD,0xff));
 					color = BLACK_COLOR;
-					SDL_SetRenderDrawColor(app.renderer, WHITE_TRIAD,0xff);
-					
-					const SDL_Rect rects[] = {
-						{x+  0,y+ 1,  1,30},
-						{x+  1,y+ 0,w-2,32},
-						{x+w-1,y+ 1,  1,30},
-					};
-					SDL_RenderFillRects(app.renderer, rects, NUMBER_OF(rects));
-			
-					// corners
-					SDL_SetRenderDrawColor(app.renderer, WHITE_TRIAD,0x80);
-					const SDL_Point points[] = {
-						{x+  0,y+ 0},
-						{x+w-1,y+ 0},
-						{x+  0,y+31},
-						{x+w-1,y+31},
-					};
-					SDL_RenderDrawPoints(app.renderer, points, NUMBER_OF(points));
 				}
 				
 				tmp = TTF_RenderUTF8_Blended(app.mini, items[i], color);
 				SDL_Texture* texture = SDL_CreateTextureFromSurface(app.renderer, tmp);
 				SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
-				real_SDL_RenderCopy(app.renderer, texture, NULL, &(SDL_Rect){x+8,y+1,tmp->w,tmp->h});
+				
+				int ox = 8;
+				// ox = (w - tmp->w)/2; // or center
+				if (i!=selected) {
+					SDL_SetTextureColorMod(texture, BLACK_TRIAD);
+					real_SDL_RenderCopy(app.renderer, texture, NULL, &(SDL_Rect){x+ox+2,y+1+2,tmp->w,tmp->h});
+					SDL_SetTextureColorMod(texture, WHITE_TRIAD);
+				}
+				
+				real_SDL_RenderCopy(app.renderer, texture, NULL, &(SDL_Rect){x+ox,y+1,tmp->w,tmp->h});
 				SDL_FreeSurface(tmp);
 				SDL_DestroyTexture(texture);
 				

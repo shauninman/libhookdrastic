@@ -373,6 +373,28 @@ static void hexdump(const void *ptr, size_t len) {
 }
 
 // --------------------------------------------
+// loading
+// --------------------------------------------
+
+enum {
+	LOADER_IDLE = 0,
+	LOADER_REQUESTED,
+	LOADER_AWAITING,
+	LOADER_STARTED,
+	LOADER_COMPLETE,
+};
+enum {
+	LOADER_RESET = 0,
+	LOADER_RESUME,
+};
+
+static struct {
+	int state;
+	int after;
+} loader = {LOADER_AWAITING,LOADER_RESUME};
+
+
+// --------------------------------------------
 // drastic shims
 // --------------------------------------------
 
@@ -388,10 +410,6 @@ typedef int32_t (*drastic_load_nds_t)(void *, const char *);
 typedef uint8_t (*drastic_audio_pause_t)(void *);
 typedef void (*drastic_audio_unpause_t)(void *);
 typedef void (*drastic_audio_revert_t)(void *);
-
-static int tmp_awaiting_load = 1;
-static int tmp_just_loaded = 0;
-static int tmp_load_started = 0;
 
 static inline void* drastic_var_system(void) {
 	return PTR_AT(app.base + 0x15ff30); // follow arg in Cutter
@@ -427,11 +445,7 @@ static void drastic_load_nds_and_jump(const char* path) {
 
 	drastic_load_nds_t d_load_nds = GET_PFN(app.base + 0x0006fd30); // nm ./drastic | grep load_nds
 	drastic_reset_system_t d_reset_system = GET_PFN(app.base + 0x0000fd50); // nm ./drastic | grep reset_system
-	
-	tmp_awaiting_load = 1;
-	tmp_load_started = 0;
-	tmp_just_loaded = 0;
-	
+
 	void* sys = drastic_var_system();
 	d_load_nds((uint8_t *)sys + 800, path);
 	d_reset_system(sys);
@@ -470,54 +484,6 @@ static void drastic_quit(void) {
 
 // --------------------------------------------
 // support
-// --------------------------------------------
-
-// TODO: reimplment with log hooks
-// this is required to handle timing issues with drastic
-// I wonder if the timing varies with rom size...yes
-// these are in frames/ticks?
-#define LOAD_DEFER 50 // was 35
-#define RESUME_DEFER 25 // was 15
-static struct {
-	int loaded;
-	int defer;
-	int resume;
-	int reset;
-} preloader = {1,LOAD_DEFER,1,0};
-
-static int preload_game(void) {
-	// puts("\tpreload_game"); fflush(stdout);
-	drastic_audio_pause(0);
-	preloader.loaded = 0;
-	preloader.defer = 0; // only need to defer on boot, not when switching
-	preloader.resume = 0;
-}
-static int preloading_game(void) {
-	// puts("\tpreloading_game"); fflush(stdout);
-	if (!preloader.loaded && !preloader.defer) {
-		preloader.loaded = 1;
-		preloader.resume = !preloader.reset;
-		preloader.reset = 0;
-		preloader.defer = preloader.resume ? RESUME_DEFER : 0;
-		// puts("\tbefore drastic_load_nds_and_jump"); fflush(stdout);
-		drastic_load_nds_and_jump(app.game_path);
-		return 1; // never returns because the above jumps
-	}
-	
-	if (preloader.defer) {
-		preloader.defer -= 1;
-		return 1;
-	}
-	
-	if (preloader.resume) {
-		preloader.resume = 0;
-		// puts("\tbefore drastic_load_state"); fflush(stdout);
-		drastic_load_state(0);
-	}
-	
-	return 0;
-}
-
 // --------------------------------------------
 
 static inline int getInt(int f) {
@@ -629,8 +595,9 @@ static void App_save(void) {
 	drastic_save_state(0);
 }
 static void App_reset(void) {
-	preloader.reset = 1;
-	preload_game();
+	drastic_audio_pause(0);
+	loader.state = LOADER_REQUESTED;
+	loader.after = LOADER_RESET;
 }
 static void Device_suspend(void) {
 	// real_SDL_RenderClear(app.renderer);
@@ -1237,7 +1204,7 @@ static SDL_Surface* App_kern(char* label, SDL_Color color) {
 	return dst;
 }
 
-static int tmp_in_drastic_menu = 0;
+static int in_drastic_menu = 0; // TODO: only used for debug, and I seem to have broken it at some point :cold_sweat:
 
 static void App_menu(void) {
 	SDL_Log("enter menu");
@@ -1356,7 +1323,10 @@ static void App_menu(void) {
 							App_save();
 							App_set(current);
 							Settings_save();
-							preload_game();
+							
+							drastic_audio_pause(0);
+							loader.state = LOADER_REQUESTED;
+							loader.after = LOADER_RESUME;
 							
 							in_menu = 0;
 						}
@@ -1571,13 +1541,13 @@ int SDL_PollEvent(SDL_Event* event) {
 				else SDL_PauseAudio(0);
 			}
 			if (event->jbutton.button==JOY_MENU) {
-				// tmp_in_drastic_menu = !tmp_in_drastic_menu;
+				// in_drastic_menu = !in_drastic_menu; // TODO: uncomment to enable drastic menu (hacky)
 				continue;
 			}
 		}
 		else if (event->type==SDL_JOYBUTTONUP) {
 			if (event->jbutton.button==JOY_MENU) {
-				if (!tmp_in_drastic_menu) {
+				if (!in_drastic_menu) {
 					App_menu();
 					continue;
 				}
@@ -1623,13 +1593,13 @@ int SDL_RenderSetLogicalSize(SDL_Renderer *renderer, int w, int h) {
 	return 1; // complete render takeover
 }
 int SDL_RenderCopy(SDL_Renderer *renderer, SDL_Texture  *texture, const SDL_Rect *srcrect, const SDL_Rect *dstrect) {
-	if (tmp_in_drastic_menu) {
+	if (in_drastic_menu) {
 		int tw,th;
 		SDL_QueryTexture(texture, NULL, NULL, &tw, &th);
 		SDL_Log("texture %ix%i", tw, th);
 	}
 	
-	if (tmp_in_drastic_menu) return real_SDL_RenderCopy(renderer, texture, srcrect, dstrect);
+	if (in_drastic_menu) return real_SDL_RenderCopy(renderer, texture, srcrect, dstrect);
 	return 1; // complete render takeover
 }
 
@@ -1638,22 +1608,32 @@ SDL_Renderer* SDL_CreateRenderer(SDL_Window* window, int index, Uint32 flags) {
 	return app.renderer;
 }
 int SDL_RenderClear(SDL_Renderer* renderer) {
-	if (tmp_in_drastic_menu) real_SDL_RenderClear(renderer);
+	if (in_drastic_menu) real_SDL_RenderClear(renderer);
 	return 1; // complete render takeover
 }
 void SDL_RenderPresent(SDL_Renderer * renderer) {
-	if (tmp_awaiting_load && tmp_just_loaded) {
-		tmp_awaiting_load = 0;
-		tmp_just_loaded = 0;
-		puts("just loaded!"); fflush(stdout);
-		preloader.defer = 0; // no need to wait any longer
-	}
-	
 	// puts("SDL_RenderPresent"); fflush(stdout);
-	if (!tmp_in_drastic_menu) {
-		if (preloading_game()) return;
+	if (!in_drastic_menu) {
+		if (loader.state!=LOADER_IDLE) {
+			if (loader.state==LOADER_REQUESTED) {
+				loader.state = LOADER_AWAITING;
+				drastic_load_nds_and_jump(app.game_path);
+				return;
+			}
+			
+			if (loader.state==LOADER_COMPLETE) {
+				loader.state = LOADER_IDLE;
+				if (loader.after==LOADER_RESUME) {
+					loader.after = LOADER_RESET;
+					drastic_load_state(0);
+				}
+			}
+			return;
+		}
+		
 		App_render(); // complete render takeover
 	}
+	
 	if (!app.menu) {
 		int battery = getInt(app.bat);
 		int is_charging = getInt(app.usb);
@@ -1694,7 +1674,7 @@ void SDL_Delay(uint32_t ms) {
 }
 
 // --------------------------------------------
-// hijack main to modify args
+// logging and string formatting hooks
 // --------------------------------------------
 
 // #define DISABLE_LOGGING
@@ -1702,21 +1682,19 @@ void SDL_Delay(uint32_t ms) {
 int __printf_chk(int flag, const char *fmt, ...) {
 	va_list ap;
 	va_start(ap, fmt);
+	
+	// listen for loading events
+	if (loader.state==LOADER_AWAITING && strncmp(fmt, "Gamecard title", 14)==0) {
+		loader.state = LOADER_STARTED;
+	}
+	else if (loader.state==LOADER_STARTED && strncmp(fmt, "Remapping DTCM", 14)==0) {
+		loader.state = LOADER_COMPLETE;
+	}
 
-	if (strncmp(fmt, "vf ticks", 8)==0 || strncmp(fmt, "ticks_delta", 11)==0) { // silence spam
+	// silence spam
+	if (strncmp(fmt, "vf ticks", 8)==0 || strncmp(fmt, "ticks_delta", 11)==0) {
 		va_end(ap);
 		return 0;
-	}
-
-	if (tmp_awaiting_load && strncmp(fmt, "Gamecard title", 14)==0) {
-		puts("detected rom loading...");
-		tmp_load_started = 1;
-	}
-	
-	if (tmp_load_started && strncmp(fmt, "Remapping DTCM", 14)==0) {
-		puts("detected rom ready!");
-		tmp_just_loaded = 1;
-		tmp_load_started = 0;
 	}
 	
 #ifdef DISABLE_LOGGING
@@ -1787,6 +1765,10 @@ int __sprintf_chk(char *s, int flag, size_t slen, const char *fmt, ...) {
 	va_end(ap);
 	return r;
 }
+
+// --------------------------------------------
+// hijack main to modify args
+// --------------------------------------------
 
 static int pick_main(struct dl_phdr_info *i, size_t s, void *out) {
 	(void)s;

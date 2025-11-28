@@ -1,14 +1,9 @@
-- can I inspect printf calls to determine when the game has been loaded
-	to eliminate the arbitrary wait times during loads?
-		this worked, need to convert from tmp_* vars 
-		and simplify pre-existing preloader logic
 - cleanup toolchain makefile
 
 - can allow drastic menu to open without rendering or handling input to ensure clock/audio queue remains in sync?
 
 - make device suspend after timeout in menu?
 - open menu and immediately sleep on power press?
-- what is the point of batmon?
 - create a battery thread that keeps the battery icon in sync and caches its rendering to a texture that can be blitted when red to non-menu screens too
 - revert to faux sleep
 	mem sleep is kinda buggy
@@ -23,7 +18,9 @@
 	I think "library" is the most neutral
 
 BUGS
+- in_drastic_menu doesn't work anymore
 - sometimes doesn't boot into save state (can result in dataloss)
+	I think this is fixed
 - toggling ff rapidly hangs drastic
 - sometimes audio doesn't return after sleep?
 	I also think audio/performance is worse after wake?

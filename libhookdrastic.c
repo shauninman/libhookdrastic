@@ -609,11 +609,7 @@ static void Device_suspend(void) {
 	drastic_await_save();
 	drastic_audio_pause(1);
     
-	int fd = open("/sys/power/state", O_WRONLY|O_CLOEXEC);
-    if (fd >= 0) {
-        write(fd, "mem\n", 4);
-        close(fd);
-    }
+	putString("/sys/power/state", "mem\n");
 	
 	drastic_audio_pause(0);
 	Settings_setVolume(settings.volume);
@@ -1209,7 +1205,6 @@ static int in_drastic_menu = 0; // TODO: only used for debug, and I seem to have
 static void App_menu(void) {
 	SDL_Log("enter menu");
 	SDL_PauseAudio(1);
-	// drastic_audio_pause(1);
 	app.menu = 1;
 	putString(CPU_PATH "scaling_setspeed", FREQ_MENU);
 	
@@ -1256,17 +1251,6 @@ static void App_menu(void) {
 			
 			if (Device_handleEvent(&event)) continue;
 			
-			// if (event.type==SDL_FINGERUP) {
-			// 	if (current!=app.current) { // BACK
-			// 		current = app.current;
-			// 		selected = 0;
-			// 		dirty = 1;
-			// 	}
-			// 	else {
-			// 		in_menu = 0;
-			// 	}
-			// }
-			// else
 			if (event.type==SDL_JOYBUTTONDOWN) {
 				if (event.jbutton.button==JOY_UP) {
 					selected -= 1;
@@ -1397,8 +1381,6 @@ static void App_menu(void) {
 			App_preview(current,1, snap);
 			
 			// screens and gradient
-			// App_render();
-			
 			SDL_SetRenderDrawColor(app.renderer, BLACK_TRIAD,0xff);
 			real_SDL_RenderClear(app.renderer);
 	
@@ -1505,8 +1487,7 @@ static void App_menu(void) {
 	
 	putString(CPU_PATH "scaling_setspeed", FREQ_GAME);
 	SDL_Log("exit menu");
-	if (!app.fast_forward) SDL_PauseAudio(0);
-	// drastic_audio_pause(0);
+	if (!app.fast_forward && loader.state==LOADER_IDLE) SDL_PauseAudio(0);
 	app.menu = 0;
 }
 
@@ -1608,7 +1589,7 @@ SDL_Renderer* SDL_CreateRenderer(SDL_Window* window, int index, Uint32 flags) {
 	return app.renderer;
 }
 int SDL_RenderClear(SDL_Renderer* renderer) {
-	if (in_drastic_menu) real_SDL_RenderClear(renderer);
+	if (in_drastic_menu) return real_SDL_RenderClear(renderer);
 	return 1; // complete render takeover
 }
 void SDL_RenderPresent(SDL_Renderer * renderer) {
@@ -1628,6 +1609,7 @@ void SDL_RenderPresent(SDL_Renderer * renderer) {
 					drastic_load_state(0);
 				}
 			}
+			
 			return;
 		}
 		

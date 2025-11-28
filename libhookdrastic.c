@@ -104,6 +104,8 @@ static struct {
 	int usb;
 	
 	int synced;
+	int menu;
+	int fast_forward;
 } app;
 
 // --------------------------------------------
@@ -383,6 +385,7 @@ typedef int32_t (*drastic_save_state_t)(void *, const char *, char *, uint16_t *
 typedef int32_t (*drastic_load_nds_t)(void *, const char *);
 typedef uint8_t (*drastic_audio_pause_t)(void *);
 typedef void (*drastic_audio_unpause_t)(void *);
+typedef void (*drastic_audio_revert_t)(void *);
 
 static inline void* drastic_var_system(void) {
 	return PTR_AT(app.base + 0x15ff30); // follow arg in Cutter
@@ -400,6 +403,9 @@ static void drastic_audio_pause(int flag) {
 	else {
 		drastic_audio_unpause_t drastic_audio_unpause = GET_PFN(app.base + 0x0008caf0);
 		drastic_audio_unpause(audio);
+		// TODO: this seems to cause hangs
+		// drastic_audio_revert_t drastic_audio_revert = GET_PFN(app.base + 0x000886a0);
+		// drastic_audio_revert(audio);
 	}
 }
 static inline int drastic_is_saving(void) {
@@ -1183,13 +1189,13 @@ static int AA_bat(int x, int y, int battery, SDL_Color c) {
 	if (w>0) AA_rect(x+8,y+8,w+2,12, 0, c);
 }
 
-static int App_battery(int x, int y, int battery, int is_charging) {
+static int App_battery(int x, int y, int battery, int is_charging, int shadowed) {
 	SDL_Color c = TRIAD_ALPHA(WHITE_TRIAD,0xff);
 	if (battery<=10) c = TRIAD_ALPHA(RED_TRIAD,0xff);
 	else if (battery<=20) c = TRIAD_ALPHA(YELLOW_TRIAD,0xff);
 	else if (battery>=100) c = TRIAD_ALPHA(GREEN_TRIAD,0xff);
 	
-	AA_bat(x+2,y+2, battery, TRIAD_ALPHA(BLACK_TRIAD,0xff));
+	if (shadowed) AA_bat(x+2,y+2, battery, TRIAD_ALPHA(BLACK_TRIAD,0xff));
 	AA_bat(x,y, battery, c);
 
 	if (is_charging) {
@@ -1219,6 +1225,9 @@ static int tmp_in_drastic_menu = 0;
 
 static void App_menu(void) {
 	SDL_Log("enter menu");
+	SDL_PauseAudio(1);
+	// drastic_audio_pause(1);
+	app.menu = 1;
 	putString(CPU_PATH "scaling_setspeed", FREQ_MENU);
 	
 	static int last_battery = 0;
@@ -1417,7 +1426,7 @@ static void App_menu(void) {
 			int x,y,w,h;
 			
 			// battery
-			App_battery(424,8, battery,is_charging);
+			App_battery(424,8, battery,is_charging,1);
 			
 			// game name
 			char name[MAX_FILE];
@@ -1510,6 +1519,9 @@ static void App_menu(void) {
 	
 	putString(CPU_PATH "scaling_setspeed", FREQ_GAME);
 	SDL_Log("exit menu");
+	if (!app.fast_forward) SDL_PauseAudio(0);
+	// drastic_audio_pause(0);
+	app.menu = 0;
 }
 
 // --------------------------------------------
@@ -1537,6 +1549,11 @@ int SDL_PollEvent(SDL_Event* event) {
 		if (Device_handleEvent(event)) continue;
 		
 		if (event->type==SDL_JOYBUTTONDOWN) {
+			if (event->jbutton.button==JOY_L3) {
+				app.fast_forward = !app.fast_forward;
+				if (app.fast_forward) SDL_PauseAudio(1);
+				else SDL_PauseAudio(0);
+			}
 			if (event->jbutton.button==JOY_MENU) {
 				// tmp_in_drastic_menu = !tmp_in_drastic_menu;
 				continue;
@@ -1613,6 +1630,11 @@ void SDL_RenderPresent(SDL_Renderer * renderer) {
 		if (preloading_game()) return;
 		App_render(); // complete render takeover
 	}
+	if (!app.menu) {
+		int battery = getInt(app.bat);
+		int is_charging = getInt(app.usb);
+		if (battery<=10 && !is_charging) App_battery(424,8, battery,0,0);
+	} 
 	real_SDL_RenderPresent(renderer);
 }
 

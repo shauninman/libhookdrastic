@@ -1,3 +1,10 @@
+- SDCARD is out of date again
+- cleanup toolchain makefile
+
+- make device suspend after timeout in menu?
+- open menu and immediately sleep on power press?
+- what is the point of batmon?
+- create a battery thread that keeps the battery icon in sync and caches it's rendering to a texture that can be blitted when red to non-menu screens too
 - revert to faux sleep
 	mem sleep is kinda buggy
 
@@ -6,16 +13,16 @@
 - start breaking common utils (constants, init, drawing, settings, utils) into header only includes
 - cache more menu bits?
 	to reduce memory churn
-- move battery checks to separate thread?
-	then draw low battery in game? (in App_render)
 - show game screens beneath goodbye message?
 - an archive, library, or backlog for games on device that shouldn't appear in the switcher
 	I think "library" is the most neutral
 
 BUGS
+- toggling ff rapidly hangs drastic
 - sometimes audio doesn't return after sleep?
 	I also think audio/performance is worse after wake?
 	could this be a timing thing or just some subsystem not fully restoring?
+	this is fixed by toggling fast forward !?
 
 -----------------------------------------------
 

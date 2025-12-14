@@ -586,8 +586,11 @@ static inline int copyFile(const char *src, const char *dst) {
 }
 
 // --------------------------------------------
-// custom menu
+// button repeater
 // --------------------------------------------
+
+#define REPEAT_TIMEOUT	300
+#define REPEAT_INTERVAL 100
 
 static int Repeater_fakeButtonEvent(SDL_Event* event, int btn, int press) {
     SDL_memset(event, 0, sizeof(*event));
@@ -604,9 +607,6 @@ static int Repeater_pollEvent(SDL_Event* event) {
 	static int minus_next = 0;
 	static int r1_next = 0;
 	static int l1_next = 0;
-	
-	#define REPEAT_TIMEOUT	300
-	#define REPEAT_INTERVAL 100
 	
 	int result = 0;
 	
@@ -633,17 +633,14 @@ static int Repeater_pollEvent(SDL_Event* event) {
 
 	if (!result) return 0;
 	
-	// repeat state
 	if (event->type==SDL_JOYBUTTONDOWN) {
 		int now = SDL_GetTicks();
 
 		if (event->jbutton.button==JOY_MENU)					menu_down = 1;
 		if (!plus_next && event->jbutton.button==JOY_PLUS)		plus_next = now + REPEAT_TIMEOUT;
 		if (!minus_next && event->jbutton.button==JOY_MINUS)	minus_next = now + REPEAT_TIMEOUT;
-		if (menu_down) {
-			if (!r1_next && event->jbutton.button==JOY_R1)		r1_next = now + REPEAT_TIMEOUT;
-			if (!l1_next && event->jbutton.button==JOY_L1)		l1_next = now + REPEAT_TIMEOUT;
-		}
+		if (!r1_next && event->jbutton.button==JOY_R1)			r1_next = now + REPEAT_TIMEOUT;
+		if (!l1_next && event->jbutton.button==JOY_L1)			l1_next = now + REPEAT_TIMEOUT;
 	}
 	else if (event->type==SDL_JOYBUTTONUP) {
 		if (event->jbutton.button==JOY_MENU) 	menu_down = 0;
@@ -655,6 +652,10 @@ static int Repeater_pollEvent(SDL_Event* event) {
 	
 	return result;
 }
+
+// --------------------------------------------
+// custom menu
+// --------------------------------------------
 
 enum {
 	SNAP_SAVE = 0,

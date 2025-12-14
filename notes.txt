@@ -1,5 +1,7 @@
 - cleanup toolchain makefile
 
+- figure out what can be reused with libhookppsspp on smart pro (non-s)
+
 - create a battery thread that keeps the battery icon in sync and caches its rendering to a texture that can be blitted when red to non-menu screens too
 
 - add htop and taskset to tina image

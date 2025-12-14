@@ -7,12 +7,14 @@
 #include <sys/mman.h>
 #include <setjmp.h>
 #include <dirent.h>
+#include <sys/ioctl.h>
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
 #include <SDL2/SDL_ttf.h>
+#include <alsa/asoundlib.h>
 
 // --------------------------------------------
 
@@ -46,11 +48,11 @@
 #define GREEN_TRIAD		0x33,0xcc,0x33
 #define YELLOW_TRIAD	0xff,0xcc,0x00
 
-#define BLACK_COLOR (SDL_Color){BLACK_TRIAD}
-#define WHITE_COLOR (SDL_Color){WHITE_TRIAD}
-#define RED_COLOR (SDL_Color){RED_TRIAD}
-#define GREEN_COLOR (SDL_Color){GREEN_TRIAD}
-#define YELLOW_COLOR (SDL_Color){YELLOW_TRIAD}
+#define BLACK_COLOR (SDL_Color){BLACK_TRIAD,0xff}
+#define WHITE_COLOR (SDL_Color){WHITE_TRIAD,0xff}
+#define RED_COLOR (SDL_Color){RED_TRIAD,0xff}
+#define GREEN_COLOR (SDL_Color){GREEN_TRIAD,0xff}
+#define YELLOW_COLOR (SDL_Color){YELLOW_TRIAD,0xff}
 
 #define TRIAD_ALPHA(t,a) (SDL_Color){t,a}
 
@@ -73,12 +75,18 @@
 #define JOY_R2		7
 #define JOY_L3		10
 
-#define JOY_VOLUP	17
-#define JOY_VOLDN	16
+#define JOY_PLUS	17
+#define JOY_MINUS	16
 
 #define SCAN_POWER	102
 
 // --------------------------------------------
+
+enum {
+	OSD_NONE,
+	OSD_VOLUME,
+	OSD_BRIGHTNESS,
+};
 
 static struct {
 	uintptr_t base;
@@ -105,8 +113,57 @@ static struct {
 	
 	int synced;
 	int menu;
+	int osd;
 	int fast_forward;
 } app;
+
+static int osd_at;
+
+// --------------------------------------------
+// tmp?
+// --------------------------------------------
+
+static int raw_vol(int value) {
+	char* card_name = "hw:0";
+	char* elem_name = "DAC volume";
+	char* mute_name = "HpSpeaker";
+
+	snd_mixer_t *mixer = NULL;
+	snd_mixer_open(&mixer, 0);
+	snd_mixer_attach(mixer, card_name);
+	snd_mixer_selem_register(mixer, NULL, NULL);
+	snd_mixer_load(mixer);
+
+	// volume
+	snd_mixer_selem_id_t *sid = NULL;
+	snd_mixer_selem_id_alloca(&sid);
+	snd_mixer_selem_id_set_index(sid, 0);
+	snd_mixer_selem_id_set_name(sid, elem_name);
+	snd_mixer_elem_t *elem = snd_mixer_find_selem(mixer, sid);
+	snd_mixer_selem_set_playback_volume_all(elem, value);
+
+	// TODO: this resets speaker/headphone state (and pops)
+	// mute/unmute
+	// snd_mixer_selem_id_t *mid = NULL;
+	// snd_mixer_selem_id_alloca(&mid);
+	// snd_mixer_selem_id_set_index(mid, 0);
+	// snd_mixer_selem_id_set_name(mid, mute_name);
+	// snd_mixer_elem_t *mute = snd_mixer_find_selem(mixer,mid);
+	// snd_mixer_selem_set_playback_switch_all(mute, value ? 1 : 0);
+
+	snd_mixer_close(mixer);
+	return 0;
+}
+
+#define DISP_LCD_SET_BRIGHTNESS 0x102
+static void raw_bri(int value) {
+	int fd = open("/dev/disp", O_RDWR);
+	if (fd<0) return;
+
+	unsigned long param[4]={0,value,0,0};
+	ioctl(fd, DISP_LCD_SET_BRIGHTNESS, &param);
+	close(fd);
+}
 
 // --------------------------------------------
 // settings
@@ -129,6 +186,8 @@ static struct {
 
 #define SETTINGS_PATH USERDATA_PATH "/settings.bin"
 static void Settings_load(void) {
+	raw_vol(0);
+	
 	if (access(SETTINGS_PATH, F_OK)!=0) return;
 	
 	FILE* file = fopen(SETTINGS_PATH, "rb");
@@ -144,7 +203,7 @@ static void Settings_save(void) {
 }
 static void Settings_setVolume(int value) {
 	char cmd[256];
-	static const uint8_t volume_raw[21] = {
+	static const uint8_t raw[21] = {
 		  0, // mute
 		120, // 0
 		131, // 11
@@ -167,13 +226,13 @@ static void Settings_setVolume(int value) {
 		179, // 2
 		180, // 1
 	};
-	sprintf(cmd, "vol %i", volume_raw[value]);
-	system(cmd);
+	
+	raw_vol(raw[value]);
 	settings.volume = value;
 }
 static void Settings_setBrightness(int value) {
 	char cmd[256];
-	static const uint8_t brightness_raw[11] = {
+	static const uint8_t raw[11] = {
 		  1, // 0
 		  8, // 8
 		 16, // 8
@@ -186,8 +245,8 @@ static void Settings_setBrightness(int value) {
 		192, // 32
 		255, // 64
 	};
-	sprintf(cmd, "bl %i", brightness_raw[value]);
-	system(cmd);
+	
+	raw_bri(raw[value]);
 	settings.brightness = value;
 }
 
@@ -502,6 +561,11 @@ static inline void putString(const char* path, const char* value) {
 	write(f, value, strlen(value));
 	close(f);
 }
+static inline void putInt(const char* path, int value) {
+	char buffer[16];
+	sprintf(buffer, "%d", value);
+	putString(path, buffer);
+}
 static inline int copyFile(const char *src, const char *dst) {
 	FILE *in = fopen(src, "rb");
 	if (!in) return -1;
@@ -520,7 +584,6 @@ static inline int copyFile(const char *src, const char *dst) {
 	
 	return 0;
 }
-
 
 // --------------------------------------------
 // custom menu
@@ -591,13 +654,23 @@ static void App_load(void) {
 }
 static void App_save(void) {
 	App_screenshot(app.current, 0, SNAP_SAVE);
-	App_screenshot(app.current, 1, SNAP_SAVE);	
+	App_screenshot(app.current, 1, SNAP_SAVE);
 	drastic_save_state(0);
 }
 static void App_reset(void) {
 	drastic_audio_pause(0);
+	puts("[LOAD] reset requested");
 	loader.state = LOADER_REQUESTED;
 	loader.after = LOADER_RESET;
+}
+
+static void Device_setLED(int enable) {
+	if (enable) system("pp 0x0300B034 0xC0");
+	else system("pp 0x0300B034 0xC4");
+}
+static void Device_mute(int mute) {
+	if (mute) raw_vol(0);
+	else Settings_setVolume(settings.volume);
 }
 static void Device_suspend(void) {
 	// real_SDL_RenderClear(app.renderer);
@@ -609,10 +682,59 @@ static void Device_suspend(void) {
 	drastic_await_save();
 	drastic_audio_pause(1);
     
-	putString("/sys/power/state", "mem\n");
+	putString("/sys/power/state", "mem");
 	
 	drastic_audio_pause(0);
 	Settings_setVolume(settings.volume);
+}
+static void Device_sleep(void) {
+	// real_SDL_RenderClear(app.renderer);
+	// real_SDL_RenderPresent(app.renderer);
+	
+	system("bl 0");
+	system("vol 0");
+	putInt("/sys/class/graphics/fb0/blank", 4);
+	Device_setLED(1);
+	
+	Settings_save();
+	
+	drastic_audio_pause(1);
+	App_save();
+	drastic_await_save();
+
+	#define POWEROFF_TIMEOUT 2 * 60 * 1000 // two minutes
+	int slept_at = SDL_GetTicks();
+	int asleep = 1;
+	SDL_Event event;
+	while (asleep) {
+		while (asleep && real_SDL_PollEvent(&event)) {
+			if (event.type==SDL_KEYUP) {
+				if (event.key.keysym.scancode==SCAN_POWER) {
+					asleep = 0;
+					break;
+				}
+			}
+		}
+		real_SDL_Delay(200);
+		
+		if (SDL_GetTicks()>=slept_at+POWEROFF_TIMEOUT) {
+			int is_charging = getInt(app.usb);
+			if (is_charging) {
+				slept_at = SDL_GetTicks(); // keep on
+			}
+			else {
+				unlink("/tmp/exec_loop");
+				drastic_quit();
+			}
+		}
+	}
+	
+	drastic_audio_pause(0);
+	
+	Settings_setVolume(settings.volume);
+	Settings_setBrightness(settings.brightness);
+	putInt("/sys/class/graphics/fb0/blank", 0);
+	Device_setLED(0);
 }
 static void Device_goodbye(void) {
 	SDL_SetRenderDrawColor(app.renderer, BLACK_TRIAD,0xff);
@@ -643,56 +765,15 @@ static void Device_poweroff(void) {
 	Device_goodbye();
 	Device_goodbye(); // backbuffer too :facepalm:
 	
-	unlink("/tmp/exec_loop");
 	system("vol 0"); // mute
 	App_save();
+	unlink("/tmp/exec_loop");
+	Device_setLED(1);
 	drastic_quit();
 }
 #define SLEEP_TIMEOUT 2 * 60 * 1000 // two minutes
 #define WAKE_DEFER 250 // quarter of a second
 #define POWER_TIMEOUT 1000 // one second
-static void Device_sleep(void) {
-	// not hooked up, doesn't work, immediately wakes
-	
-	if (app.renderer) {
-		SDL_SetRenderDrawColor(app.renderer, BLACK_TRIAD,0xff);
-		real_SDL_RenderClear(app.renderer);	
-	}
-	system("bl 0");
-
-	Settings_save();
-	App_save();
-	drastic_await_save();
-	drastic_audio_pause(1);
-	
-	SDL_Event event;
-	int slept_at = SDL_GetTicks();
-	int sleeping = 1;
-	
-	while (SDL_PollEvent(NULL)); // discard any queued input
-	
-	while (sleeping) {
-		while (real_SDL_PollEvent(&event)) {
-			if (event.type==SDL_KEYUP) {
-				if (event.key.keysym.scancode==SCAN_POWER) {
-					sleeping = 0;
-					break;
-				}
-			}
-		
-			real_SDL_Delay(200);
-			if (SDL_GetTicks()-slept_at>=SLEEP_TIMEOUT) {
-				int is_charging = getInt(app.usb);
-				if (is_charging) slept_at += SLEEP_TIMEOUT; // try again later
-				else Device_poweroff();
-			}
-		}
-	}
-	
-	drastic_audio_pause(0);
-	Settings_setVolume(settings.volume);
-	Settings_setBrightness(settings.brightness);
-}
 static int Device_handleEvent(SDL_Event* event) {
 	static int menu_down = 0;
 	static int menu_combo = 0;
@@ -713,7 +794,7 @@ static int Device_handleEvent(SDL_Event* event) {
 		if (event->key.keysym.scancode==SCAN_POWER) {
 			power_down_at = 0;
 			if (SDL_GetTicks()-woken_at>WAKE_DEFER) {
-				Device_suspend();
+				Device_sleep();
 				woken_at = SDL_GetTicks();
 			}
 			return 1;
@@ -742,15 +823,19 @@ static int Device_handleEvent(SDL_Event* event) {
 			}
 		}
 		
-		if (event->jbutton.button==JOY_VOLUP) {
+		if (event->jbutton.button==JOY_PLUS) {
 			if (settings.volume<20) {
 				Settings_setVolume(settings.volume+1);
+				app.osd = OSD_VOLUME;
+				osd_at = SDL_GetTicks();
 			}
 			return 1;
 		}
-		else if (event->jbutton.button==JOY_VOLDN) {
+		else if (event->jbutton.button==JOY_MINUS) {
 			if (settings.volume>0) {
 				Settings_setVolume(settings.volume-1);
+				app.osd = OSD_VOLUME;
+				osd_at = SDL_GetTicks();
 			}
 			return 1;
 		}
@@ -760,6 +845,8 @@ static int Device_handleEvent(SDL_Event* event) {
 				if (settings.brightness<10) {
 					Settings_setBrightness(settings.brightness+1);
 					menu_combo = 1;
+					app.osd = OSD_BRIGHTNESS;
+					osd_at = SDL_GetTicks();
 				}
 				return 1;
 			}
@@ -769,6 +856,8 @@ static int Device_handleEvent(SDL_Event* event) {
 				if (settings.brightness>0) {
 					Settings_setBrightness(settings.brightness-1);
 					menu_combo = 1;
+					app.osd = OSD_BRIGHTNESS;
+					osd_at = SDL_GetTicks();
 				}
 				return 1;
 			}
@@ -1202,9 +1291,55 @@ static SDL_Surface* App_kern(char* label, SDL_Color color) {
 
 static int in_drastic_menu = 0; // TODO: only used for debug, and I seem to have broken it at some point :cold_sweat:
 
+static void App_OSD(char* label, int value, int max) {
+	int x,y,w,h;
+	
+	TTF_SizeUTF8(app.mini, label, &w, NULL);
+	w = 8 + w + 8 + 236 + 8;
+	h = 8 + 28 + 8;
+	x = (SCREEN_WIDTH - w) / 2;
+	y = ((SCREEN_HEIGHT/2) - h) * 3 / 4;
+	
+	AA_rect(x,y,w,h, 0, TRIAD_ALPHA(BLACK_TRIAD,0x60));
+
+	SDL_Surface* tmp = TTF_RenderUTF8_Blended(app.mini, label, WHITE_COLOR);
+	SDL_Texture* texture = SDL_CreateTextureFromSurface(app.renderer, tmp);
+	SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+	
+	w = tmp->w;
+	
+	// shadpw
+	SDL_SetTextureColorMod(texture, BLACK_TRIAD);
+	real_SDL_RenderCopy(app.renderer, texture, NULL, &(SDL_Rect){x+8+2,y+8+2,tmp->w,tmp->h});
+	SDL_SetTextureColorMod(texture, WHITE_TRIAD);
+	
+	// label
+	real_SDL_RenderCopy(app.renderer, texture, NULL, &(SDL_Rect){x+8,y+8,tmp->w,tmp->h});
+	SDL_FreeSurface(tmp);
+	SDL_DestroyTexture(texture);
+	
+	int nw = max==10?20:8;
+	int nh = 28;
+	int no = max==10?24:12;
+	for (int i=0; i<max; i++) {
+		int nx = x + 8 + w + 8;
+		int ny = y + 8;
+		AA_rect(nx+i*no+2,ny+2,nw,nh, 0, BLACK_COLOR);
+		if (i<value) {
+			AA_rect(nx+i*no,ny,nw,nh, 0, WHITE_COLOR);
+		}
+	}
+}
+
 static void App_menu(void) {
 	SDL_Log("enter menu");
-	SDL_PauseAudio(1);
+
+
+
+	// SDL_PauseAudio(1);
+	Device_mute(1);
+
+
 	app.menu = 1;
 	putString(CPU_PATH "scaling_setspeed", FREQ_MENU);
 	
@@ -1236,45 +1371,58 @@ static void App_menu(void) {
 		app.preview[0] = SDL_CreateTexture(app.renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, 256,192);
 		app.preview[1] = SDL_CreateTexture(app.renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, 256,192);
 	}
-	
+	int menu_at = SDL_GetTicks();
 	int selected = 0;
 	int capture = 0;
 	int dirty = 1;
 	int in_menu = 1;
 	SDL_Event event;
+	int last_osd = app.osd;
 	while (in_menu) {
+		
+		if (osd_at+1000<SDL_GetTicks()) app.osd = OSD_NONE;
+		if (last_osd!=app.osd) {
+			last_osd = app.osd;
+			dirty = 1;
+		}
+
 		while (in_menu && real_SDL_PollEvent(&event)) {
 			// LOG_event(&event);
+			int btn = event.jbutton.button;
 			
-			// TODO: shouldn't this be gated by event.type==SDL_JOYBUTTONDOWN?
-			if (event.jbutton.button==JOY_L2 || event.jbutton.button==JOY_R2) dirty = 1;
+			if (btn==JOY_L2 || btn==JOY_R2) dirty = 1;
+
+			if (btn==JOY_PLUS || btn==JOY_MINUS) dirty = 1;
+			if (btn==JOY_L1 || btn==JOY_R1) dirty = 1;
 			
 			if (Device_handleEvent(&event)) continue;
 			
 			if (event.type==SDL_JOYBUTTONDOWN) {
-				if (event.jbutton.button==JOY_UP) {
+				menu_at = SDL_GetTicks();
+				
+				if (btn==JOY_UP) {
 					selected -= 1;
 					dirty = 1;
 				}
-				else if (event.jbutton.button==JOY_DOWN) {
+				else if (btn==JOY_DOWN) {
 					selected += 1;
 					dirty = 1;
 				}
 				
-				if (event.jbutton.button==JOY_RIGHT) {
+				if (btn==JOY_RIGHT) {
 					selected = 0;
 					current += 1;
 					if (current>=app.count) current -= app.count;
 					dirty = 1;
 				}
-				else if (event.jbutton.button==JOY_LEFT) {
+				else if (btn==JOY_LEFT) {
 					selected = 0;
 					current -= 1;
 					if (current<0) current += app.count;
 					dirty = 1;
 				}
 				
-				if (event.jbutton.button==JOY_B) { // BACK
+				if (btn==JOY_B) { // BACK
 					if (current!=app.current) {
 						current = app.current;
 						selected = 0;
@@ -1284,7 +1432,7 @@ static void App_menu(void) {
 						in_menu = 0;
 					}
 				}
-				else if (event.jbutton.button==JOY_A) { // SELECT
+				else if (btn==JOY_A) { // SELECT
 					if (current==app.current) {
 						if (selected==0) { // SAVE
 							App_save();
@@ -1309,6 +1457,7 @@ static void App_menu(void) {
 							Settings_save();
 							
 							drastic_audio_pause(0);
+							puts("[LOAD] resume requested");
 							loader.state = LOADER_REQUESTED;
 							loader.after = LOADER_RESUME;
 							
@@ -1317,20 +1466,21 @@ static void App_menu(void) {
 					}
 				}
 				
-				if (event.jbutton.button==JOY_START) { // TODO: tmp
+				if (btn==JOY_START) { // TODO: tmp
 					drastic_save_state(0);
 					drastic_quit();
 					in_menu = 0;
 				}
 				
 				// TODO: tmp
-				if (event.jbutton.button==JOY_L1) { // capture
+				if (btn==JOY_L1) { // capture
 					capture = 1;
 					dirty = 1;
 				}
 			}
 			else if (event.type==SDL_JOYBUTTONUP) {
-				if (event.jbutton.button==JOY_MENU) {
+				menu_at = SDL_GetTicks();
+				if (btn==JOY_MENU) {
 					in_menu = 0;
 				}
 			}
@@ -1472,6 +1622,10 @@ static void App_menu(void) {
 				y += 40;
 			}
 			
+			// volume/brightness osd
+			if (app.osd==OSD_VOLUME) App_OSD("VOLUME", settings.volume, 20);
+			else if (app.osd==OSD_BRIGHTNESS) App_OSD("BRIGHTNESS", settings.brightness, 10);
+			
 			// flip
 			real_SDL_RenderPresent(app.renderer);
 			
@@ -1483,12 +1637,22 @@ static void App_menu(void) {
 		else {
 			real_SDL_Delay(16);
 		}
+		
+		#define MENU_TIMEOUT 30 * 1000 // thirty seconds
+		if (SDL_GetTicks()>=menu_at+MENU_TIMEOUT) {
+			if (!is_charging) {
+				Device_sleep();
+				dirty = 1;
+			}
+			menu_at = SDL_GetTicks();
+		}
 	}
 	
 	putString(CPU_PATH "scaling_setspeed", FREQ_GAME);
-	SDL_Log("exit menu");
-	if (!app.fast_forward && loader.state==LOADER_IDLE) SDL_PauseAudio(0);
+	if (!app.fast_forward && loader.state==LOADER_IDLE) Device_mute(0);
 	app.menu = 0;
+
+	SDL_Log("exit menu");
 }
 
 // --------------------------------------------
@@ -1518,8 +1682,15 @@ int SDL_PollEvent(SDL_Event* event) {
 		if (event->type==SDL_JOYBUTTONDOWN) {
 			if (event->jbutton.button==JOY_L3) {
 				app.fast_forward = !app.fast_forward;
-				if (app.fast_forward) SDL_PauseAudio(1);
-				else SDL_PauseAudio(0);
+				
+				
+				if (app.fast_forward) Device_mute(1);
+				else Device_mute(0);
+				
+				// if (app.fast_forward) SDL_PauseAudio(1);
+				// else SDL_PauseAudio(0);
+				
+				
 			}
 			if (event->jbutton.button==JOY_MENU) {
 				// in_drastic_menu = !in_drastic_menu; // TODO: uncomment to enable drastic menu (hacky)
@@ -1597,17 +1768,22 @@ void SDL_RenderPresent(SDL_Renderer * renderer) {
 	if (!in_drastic_menu) {
 		if (loader.state!=LOADER_IDLE) {
 			if (loader.state==LOADER_REQUESTED) {
+				puts("[LOAD] requesting load...");
 				loader.state = LOADER_AWAITING;
 				drastic_load_nds_and_jump(app.game_path);
 				return;
 			}
 			
 			if (loader.state==LOADER_COMPLETE) {
+				puts("[LOAD] load complete");
 				loader.state = LOADER_IDLE;
 				if (loader.after==LOADER_RESUME) {
+					puts("[LOAD] perform resume");
 					loader.after = LOADER_RESET;
 					drastic_load_state(0);
 				}
+				else puts("[LOAD] perform reset");
+				Device_mute(0);
 			}
 			
 			return;
@@ -1620,8 +1796,13 @@ void SDL_RenderPresent(SDL_Renderer * renderer) {
 		int battery = getInt(app.bat);
 		int is_charging = getInt(app.usb);
 		if (battery<=10 && !is_charging) App_battery(424,8, battery,0,0);
+		
+		if (app.osd==OSD_VOLUME) App_OSD("VOLUME", settings.volume, 20);
+		else if (app.osd==OSD_BRIGHTNESS) App_OSD("BRIGHTNESS", settings.brightness, 10);
 	} 
 	real_SDL_RenderPresent(renderer);
+
+	if (osd_at+1000<SDL_GetTicks()) app.osd = OSD_NONE;
 }
 
 SDL_Texture *SDL_CreateTexture(SDL_Renderer *renderer, Uint32 format, int type, int w, int h) {
@@ -1667,9 +1848,11 @@ int __printf_chk(int flag, const char *fmt, ...) {
 	
 	// listen for loading events
 	if (loader.state==LOADER_AWAITING && strncmp(fmt, "Gamecard title", 14)==0) {
+		puts("[LOAD] load started");
 		loader.state = LOADER_STARTED;
 	}
 	else if (loader.state==LOADER_STARTED && strncmp(fmt, "Remapping DTCM", 14)==0) {
+		puts("[LOAD] load completed");
 		loader.state = LOADER_COMPLETE;
 	}
 
@@ -1813,6 +1996,7 @@ static int override_args(int argc, char **argv, char **envp) {
 	App_init();
 	char *new_argv[] = { argv[0], app.game_path, NULL };
 	
+	puts("[LOAD] resume requested");
 	return drastic_main(2, new_argv, envp);
 }
 

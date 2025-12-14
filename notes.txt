@@ -1,12 +1,8 @@
+- button repeat (for volume/brightness)
+
 - cleanup toolchain makefile
 
-- can allow drastic menu to open without rendering or handling input to ensure clock/audio queue remains in sync?
-
-- make device suspend after timeout in menu?
-- open menu and immediately sleep on power press?
 - create a battery thread that keeps the battery icon in sync and caches its rendering to a texture that can be blitted when red to non-menu screens too
-- revert to faux sleep
-	mem sleep is kinda buggy
 
 - add htop and taskset to tina image
 	pin hot thread to a specific core?
@@ -19,13 +15,6 @@
 
 BUGS
 - in_drastic_menu doesn't work anymore
-- sometimes doesn't boot into save state (can result in dataloss)
-	I think this is fixed
-- toggling ff rapidly hangs drastic
-- sometimes audio doesn't return after sleep?
-	I also think audio/performance is worse after wake?
-	could this be a timing thing or just some subsystem not fully restoring?
-	this is fixed by toggling fast forward !?
 
 -----------------------------------------------
 

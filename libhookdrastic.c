@@ -589,6 +589,73 @@ static inline int copyFile(const char *src, const char *dst) {
 // custom menu
 // --------------------------------------------
 
+static int Repeater_fakeButtonEvent(SDL_Event* event, int btn, int press) {
+    SDL_memset(event, 0, sizeof(*event));
+    event->type = event->jbutton.type = press ? SDL_JOYBUTTONDOWN : SDL_JOYBUTTONUP;
+    event->jbutton.which  = 0;
+    event->jbutton.button = btn;
+    event->jbutton.state  = press ? SDL_PRESSED : SDL_RELEASED;
+    event->jbutton.timestamp = SDL_GetTicks();
+	return 1;
+}
+static int Repeater_pollEvent(SDL_Event* event) {
+	static int menu_down = 0;
+	static int plus_next = 0;
+	static int minus_next = 0;
+	static int r1_next = 0;
+	static int l1_next = 0;
+	
+	#define REPEAT_TIMEOUT	300
+	#define REPEAT_INTERVAL 100
+	
+	int result = 0;
+	
+	int now = SDL_GetTicks();
+	if (plus_next && now>=plus_next) {
+		result = Repeater_fakeButtonEvent(event, JOY_PLUS, 1);
+		plus_next += REPEAT_INTERVAL;
+	}
+	else if (minus_next && now>=minus_next) {
+		result = Repeater_fakeButtonEvent(event, JOY_MINUS, 1);
+		minus_next += REPEAT_INTERVAL;
+	}
+	else if (menu_down && r1_next && now>=r1_next) {
+		result = Repeater_fakeButtonEvent(event, JOY_R1, 1);
+		r1_next += REPEAT_INTERVAL;
+	}
+	else if (menu_down && l1_next && now>=l1_next) {
+		result = Repeater_fakeButtonEvent(event, JOY_L1, 1);
+		l1_next += REPEAT_INTERVAL;
+	}
+	else {
+		result = real_SDL_PollEvent(event);
+	}
+
+	if (!result) return 0;
+	
+	// repeat state
+	if (event->type==SDL_JOYBUTTONDOWN) {
+		int now = SDL_GetTicks();
+
+		if (event->jbutton.button==JOY_MENU)					menu_down = 1;
+		if (!plus_next && event->jbutton.button==JOY_PLUS)		plus_next = now + REPEAT_TIMEOUT;
+		if (!minus_next && event->jbutton.button==JOY_MINUS)	minus_next = now + REPEAT_TIMEOUT;
+		if (menu_down) {
+			if (!r1_next && event->jbutton.button==JOY_R1)		r1_next = now + REPEAT_TIMEOUT;
+			if (!l1_next && event->jbutton.button==JOY_L1)		l1_next = now + REPEAT_TIMEOUT;
+		}
+	}
+	else if (event->type==SDL_JOYBUTTONUP) {
+		if (event->jbutton.button==JOY_MENU) 	menu_down = 0;
+		if (event->jbutton.button==JOY_PLUS) 	plus_next = 0;
+		if (event->jbutton.button==JOY_MINUS)	minus_next = 0;
+		if (event->jbutton.button==JOY_R1)		r1_next = 0;
+		if (event->jbutton.button==JOY_L1)		l1_next = 0;
+	}
+	
+	return result;
+}
+
 enum {
 	SNAP_SAVE = 0,
 	SNAP_CURRENT,
@@ -778,21 +845,21 @@ static int Device_handleEvent(SDL_Event* event) {
 	static int menu_down = 0;
 	static int menu_combo = 0;
 	static int woken_at = 0;
-	static int power_down_at = 0;
+	static int power_at = 0;
 	
-	if (power_down_at && SDL_GetTicks()-power_down_at>=POWER_TIMEOUT) {
+	if (power_at && SDL_GetTicks()-power_at>=POWER_TIMEOUT) {
 		Device_poweroff();
 	}
 	
 	if (event->type==SDL_KEYDOWN) {
 		if (event->key.keysym.scancode==SCAN_POWER && event->key.repeat==0) {
-			power_down_at = SDL_GetTicks();
+			power_at = SDL_GetTicks();
 			return 1;
 		}
 	}
 	else if (event->type==SDL_KEYUP) {
 		if (event->key.keysym.scancode==SCAN_POWER) {
-			power_down_at = 0;
+			power_at = 0;
 			if (SDL_GetTicks()-woken_at>WAKE_DEFER) {
 				Device_sleep();
 				woken_at = SDL_GetTicks();
@@ -1386,7 +1453,7 @@ static void App_menu(void) {
 			dirty = 1;
 		}
 
-		while (in_menu && real_SDL_PollEvent(&event)) {
+		while (in_menu && Repeater_pollEvent(&event)) {
 			// LOG_event(&event);
 			int btn = event.jbutton.button;
 			
@@ -1672,9 +1739,10 @@ void SDL_SetWindowSize(SDL_Window* window, int w, int h) {
 	// real_SDL_SetWindowSize(window, w, h); 
 }
 int SDL_PollEvent(SDL_Event* event) {
+	
 	// loop is required to capture button presses
 	while (1) {
-		int result = real_SDL_PollEvent(event);
+		int result = Repeater_pollEvent(event);
 		if (!result) return 0;
 		
 		if (Device_handleEvent(event)) continue;
@@ -1682,15 +1750,8 @@ int SDL_PollEvent(SDL_Event* event) {
 		if (event->type==SDL_JOYBUTTONDOWN) {
 			if (event->jbutton.button==JOY_L3) {
 				app.fast_forward = !app.fast_forward;
-				
-				
 				if (app.fast_forward) Device_mute(1);
 				else Device_mute(0);
-				
-				// if (app.fast_forward) SDL_PauseAudio(1);
-				// else SDL_PauseAudio(0);
-				
-				
 			}
 			if (event->jbutton.button==JOY_MENU) {
 				// in_drastic_menu = !in_drastic_menu; // TODO: uncomment to enable drastic menu (hacky)

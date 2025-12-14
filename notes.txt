@@ -1,5 +1,3 @@
-- button repeat (for volume/brightness)
-
 - cleanup toolchain makefile
 
 - create a battery thread that keeps the battery icon in sync and caches its rendering to a texture that can be blitted when red to non-menu screens too

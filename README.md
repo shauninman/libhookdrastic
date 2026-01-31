@@ -1,4 +1,4 @@
-# Dedicated OS
+# DEDICATED OS
 
 DEDICATED OS is a cluster of hyper-focused, single-system launchers for specific devices. This version is for playing Nintendo DS on the MagicX Zero40.
 
@@ -6,7 +6,7 @@ This is what it looks like:
 
 <img width=240 src="github/dedicated-menu.png" title=Menu /> <img width=240 src="github/dedicated-archive.png" title=Archive /> 
 
-That's it. 
+That's it. You can [grab the latest version here](https://github.com/dedicated-os/dedicated-zero40/releases).
 
 ## Features
 

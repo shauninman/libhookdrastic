@@ -1,6 +1,9 @@
 - readme with installation instructions (or just add to release notes?)
-	flash main-zero40-<date>.img to a small SD card, insert in top TF1/INT slot
-	unzip dedicated-os-<date>.zip onto the root of a FAT32 formated SD card, add roms to the games folder, insert into bottom, TF2/EXT slot
+	flash main-zero40-<date>.img to a small SD card, eject and insert in top TF1/INT slot
+		https://github.com/dedicated-os/main-zero40/releases/latest
+		
+	unzip dedicated-os-<date>.zip onto the root of a FAT32 formated SD card, add roms to the games folder, eject and insert into bottom, TF2/EXT slot
+ 	
  
 - build script needs to 
 	- remove elf extension

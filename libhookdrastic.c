@@ -82,6 +82,9 @@
 #define JOY_PLUS	17
 #define JOY_MINUS	16
 
+#define AXIS_Y 	0
+#define AXIS_X 	1
+
 #define SCAN_POWER	102
 
 // --------------------------------------------
@@ -129,6 +132,7 @@ static struct {
 	int synced;
 	int menu;
 	int osd;
+	int capture;
 	int fast_forward;
 } app;
 
@@ -578,6 +582,9 @@ static inline int getInt(int f) {
 	b[n] = '\0';
 	return atoi(b);
 }
+static inline void getString(void) {
+	
+}
 static inline void putString(const char* path, const char* value) {
 	int f = open(path, O_WRONLY);
 	if (f<0) return;
@@ -588,24 +595,6 @@ static inline void putInt(const char* path, int value) {
 	char buffer[16];
 	sprintf(buffer, "%d", value);
 	putString(path, buffer);
-}
-static inline int copyFile(const char *src, const char *dst) {
-	FILE *in = fopen(src, "rb");
-	if (!in) return -1;
-	
-	FILE *out = fopen(dst, "wb");
-	if (!out) { fclose(in); return -1; }
-	
-	char buf[64*1024];
-	size_t n;
-	while ((n = fread(buf, 1, sizeof buf, in))>0) {
-		fwrite(buf, 1, n, out);
-	}
-	
-	fclose(in);
-	fclose(out);
-	
-	return 0;
 }
 static inline int exists(const char* path) {
 	return access(path, F_OK)==0;
@@ -665,6 +654,14 @@ static int Repeater_pollEvent(SDL_Event* event) {
 	static int r1_next = 0;
 	static int l1_next = 0;
 	
+	// analog to dpad
+	static int ax = 0;
+	static int ay = 0;
+	static int dpad_up = 0;
+	static int dpad_down = 0;
+	static int dpad_left = 0;
+	static int dpad_right = 0;
+	
 	int result = 0;
 	
 	int now = SDL_GetTicks();
@@ -705,6 +702,53 @@ static int Repeater_pollEvent(SDL_Event* event) {
 		if (event->jbutton.button==JOY_MINUS)	minus_next = 0;
 		if (event->jbutton.button==JOY_R1)		r1_next = 0;
 		if (event->jbutton.button==JOY_L1)		l1_next = 0;
+	}
+	else if (event->type==SDL_JOYAXISMOTION) {
+		int lx = ax;
+		int ly = ay;
+		
+		if (event->jaxis.axis==AXIS_X) ax = event->jaxis.value * -1; // inverted!
+		else ay = event->jaxis.value;
+		
+		#define DEADZONE 12000
+		if (ax!=lx) {
+			if (ax>DEADZONE) {
+				if (dpad_left) Repeater_fakeButtonEvent(event, JOY_LEFT, 0);
+				if (!dpad_right) Repeater_fakeButtonEvent(event, JOY_RIGHT, 1);
+				dpad_left = 0;
+				dpad_right = 1;
+			}
+			else if (ax<-DEADZONE) {
+				if (dpad_right) Repeater_fakeButtonEvent(event, JOY_RIGHT, 0);
+				if (!dpad_left) Repeater_fakeButtonEvent(event, JOY_LEFT, 1);
+				dpad_right = 0;
+				dpad_left = 1;
+			}
+			else {
+				if (dpad_left) Repeater_fakeButtonEvent(event, JOY_LEFT, 0);
+				if (dpad_right) Repeater_fakeButtonEvent(event, JOY_RIGHT, 0);
+				dpad_left = dpad_right = 0;
+			}
+		}
+		if (ay!=ly) {
+			if (ay>DEADZONE) {
+				if (dpad_up) Repeater_fakeButtonEvent(event, JOY_UP, 0);
+				if (!dpad_down) Repeater_fakeButtonEvent(event, JOY_DOWN, 1);
+				dpad_up = 0;
+				dpad_down = 1;
+			}
+			else if (ay<-DEADZONE) {
+				if (dpad_down) Repeater_fakeButtonEvent(event, JOY_DOWN, 0);
+				if (!dpad_up) Repeater_fakeButtonEvent(event, JOY_UP, 1);
+				dpad_down = 0;
+				dpad_up = 1;
+			}
+			else {
+				if (dpad_up) Repeater_fakeButtonEvent(event, JOY_UP, 0);
+				if (dpad_down) Repeater_fakeButtonEvent(event, JOY_DOWN, 0);
+				dpad_up = dpad_down = 0;
+			}
+		}
 	}
 	
 	return result;
@@ -988,6 +1032,7 @@ enum {
 
 static void App_screenshot(int game, int screen, int snap);
 static void App_battery(int battery, int is_charging, int shadowed);
+static  int App_capture(const char* path);
 static void App_quit(void);
 
 static void App_sync(int force) {
@@ -1058,6 +1103,16 @@ static void App_reset(void) {
 	loader.after = LOADER_RESET;
 }
 
+static int Device_OTG(void) {
+    FILE *f = fopen("/sys/class/android_usb/android0/state", "r");
+    if (!f) return 0;
+
+    char buffer[64];
+    int connected = fgets(buffer, sizeof(buffer), f) && strstr(buffer, "CONFIGURED");
+    fclose(f);
+	
+    return connected;
+}
 static void Device_setLED(int enable) {
 	raw_led(enable);
 }
@@ -1150,6 +1205,9 @@ static void Device_poweroff(void) {
 	Device_goodbye();
 	Device_goodbye(); // backbuffer too :facepalm:
 	
+	// TODO: tmp
+	// App_capture("/mnt/UDISK/capture.bmp");
+	
 	raw_vol(0);
 	App_save();
 	unlink("/tmp/exec_loop");
@@ -1165,6 +1223,7 @@ static int Device_handleEvent(SDL_Event* event) {
 	static int woken_at = 0;
 	static int power_at = 0;
 	
+	// batmon manages power button itself
 	if (!app.batmon) {
 		if (power_at && SDL_GetTicks()-power_at>=POWER_TIMEOUT) {
 			Device_poweroff();
@@ -1192,6 +1251,14 @@ static int Device_handleEvent(SDL_Event* event) {
 		if (event->jbutton.button==JOY_MENU) {
 			menu_down = 1;
 			menu_combo = 0;
+		}
+		
+		if (event->jbutton.button==JOY_SELECT) { // capture
+			if (menu_down) {
+				app.capture = 1;
+				menu_combo = 1;
+				return 1;
+			}
 		}
 		
 		if (event->jbutton.button==JOY_L2) {
@@ -1257,6 +1324,7 @@ static int Device_handleEvent(SDL_Event* event) {
 			return menu_combo;
 		}
 	}
+	
 	return 0;
 }
 
@@ -1408,11 +1476,11 @@ static void App_preview(int game, int screen, int snap) {
 	
 	SDL_FreeSurface(tmp);
 }
-static  int App_capture(void) {
-	// SDL_Log("capture");
+static  int App_capture(const char* path) {
+	app.capture = 0;
 	SDL_Surface *tmp = SDL_CreateRGBSurfaceWithFormat(0, SCREEN_WIDTH, SCREEN_HEIGHT, 32, SDL_PIXELFORMAT_ARGB8888);
 	SDL_RenderReadPixels(app.renderer, NULL, SDL_PIXELFORMAT_ARGB8888, tmp->pixels, tmp->pitch);
-	SDL_SaveBMP(tmp, "/tmp/capture.bmp");
+	SDL_SaveBMP(tmp, path);
 	SDL_FreeSurface(tmp);
 }
 
@@ -1471,9 +1539,8 @@ static void App_init(void) {
 	
 	app.bat = open(BAT_PATH "capacity", O_RDONLY);
 	app.usb = open(USB_PATH "online", O_RDONLY);
-	app.batmon = getInt(app.usb);
+	app.batmon = getInt(app.usb) && !Device_OTG();
 }
-
 static void App_quit(void) {
 	SDL_Log("App_quit");
 	
@@ -1753,6 +1820,8 @@ static void App_battery(int battery, int is_charging, int shadowed) {
 static int in_drastic_menu = 0; // TODO: only used for debug, and I seem to have broken it at some point :cold_sweat:
 
 static void App_OSD(char* label, int value, int max) {
+	LOG("OSD %s", label);
+	
 	int nh = 28;
 	int x,y,w,h;
 	Font_getTextSize(font16, label, &w, &h);
@@ -1832,7 +1901,6 @@ static void App_menu(void) {
 	
 	int menu_at = SDL_GetTicks();
 	int selected = 0;
-	int capture = 0;
 	int dirty = 1;
 	int top = 0;
 	int rows = 12;
@@ -1856,6 +1924,8 @@ static void App_menu(void) {
 
 			if (btn==JOY_PLUS || btn==JOY_MINUS) dirty = 1;
 			if (btn==JOY_L1 || btn==JOY_R1) dirty = 1;
+			
+			if (btn==JOY_SELECT) dirty = 1;
 			
 			if (Device_handleEvent(&event)) continue;
 			
@@ -2000,12 +2070,6 @@ static void App_menu(void) {
 					drastic_save_state(0);
 					drastic_quit();
 					in_menu = 0;
-				}
-				
-				// TODO: tmp
-				if (btn==JOY_L1) { // capture
-					capture = 1;
-					dirty = 1;
 				}
 			}
 			else if (event.type==SDL_JOYBUTTONUP) {
@@ -2171,10 +2235,7 @@ static void App_menu(void) {
 			// flip
 			real_SDL_RenderPresent(app.renderer);
 			
-			if (capture) {
-				App_capture();
-				capture = 0;
-			}
+			if (app.capture) App_capture("/tmp/capture.bmp");
 		}
 		else {
 			real_SDL_Delay(16);
@@ -2199,6 +2260,8 @@ static void App_menu(void) {
 
 #define BATMON_TIMEOUT (5 * 1000) // five seconds
 static void App_batmon(void) {
+	SDL_Log("batmon");
+	
 	if (!app.bg) app.bg = IMG_LoadTexture(app.renderer, ASSETS_PATH "/bg.png");
 	
 	putString(CPU_PATH "scaling_setspeed", FREQ_MENU);
@@ -2208,6 +2271,8 @@ static void App_batmon(void) {
 	
 	int asleep = 0;
 	int wake = 0;
+	int power_off = 0;
+	int power_at = 0;
 	int input_down_at = SDL_GetTicks();
 	int dirty = 1;
 	int last_osd = app.osd;
@@ -2228,15 +2293,28 @@ static void App_batmon(void) {
 			if (btn==JOY_PLUS || btn==JOY_MINUS) dirty = 1;
 			if (btn==JOY_L1 || btn==JOY_R1) dirty = 1;
 			
+			if (btn==JOY_SELECT) dirty = 1;
+			
 			if (Device_handleEvent(&event)) continue;			
 
-			if (event.type==SDL_KEYUP) {
+			if (power_at && SDL_GetTicks()-power_at>=POWER_TIMEOUT) {
+				power_off = 1;
+			}
+	
+			if (event.type==SDL_KEYDOWN) {
+				if (event.key.keysym.scancode==SCAN_POWER && event.key.repeat==0) {
+					power_at = SDL_GetTicks();
+				}
+			}
+			else if (event.type==SDL_KEYUP) {
 				if (event.key.keysym.scancode==SCAN_POWER) {
 					app.batmon = 0;
 					if (asleep) wake = 1;
 				}
 			}
-			else if (event.type==SDL_JOYBUTTONDOWN) {
+			
+			// NOTE: touches don't register when the screen is off
+			if (event.type==SDL_JOYBUTTONDOWN || event.type==SDL_FINGERDOWN) {
 				input_down_at = SDL_GetTicks();
 				if (asleep) wake = 1; 
 			}
@@ -2253,23 +2331,31 @@ static void App_batmon(void) {
 			was_charging = is_charging;
 			dirty = 1;
 			
-			if (!is_charging) {
-				// power off on unplug
-				unlink("/tmp/exec_loop");
-				exit(0);
-			}
+			if (!is_charging) power_off = 1;
+		}
+		
+		if (power_off) {
+			fflush(stdout);
+			SDL_Log("power off");
+			
+			// power off on unplug
+			unlink("/tmp/exec_loop");
+			Device_setLED(1);
+			exit(0);
 		}
 		
 		if (!wake && SDL_GetTicks()-input_down_at>=BATMON_TIMEOUT) {
 			asleep = 1;
 			raw_bri(0);
 			putInt("/sys/class/graphics/fb0/blank", 4);
+			Device_setLED(1);
 		}
 
 		if (wake) {
 			wake = 0;
 			Settings_setBrightness(settings.brightness);
 			putInt("/sys/class/graphics/fb0/blank", 0);
+			Device_setLED(0);
 			asleep = 0;
 		}
 		
@@ -2288,13 +2374,25 @@ static void App_batmon(void) {
 			
 			SDL_SetRenderDrawColor(app.renderer, BLACK_TRIAD,0xff);
 			real_SDL_RenderClear(app.renderer);
-			
+
+			App_sync(1);
+
 			real_SDL_RenderCopy(app.renderer, app.bg, NULL, NULL);
 			
 			Font_shadowText(app.renderer, font24, "Dedicated OS", 6,6, LIGHT_COLOR);
-			Font_shadowText(app.renderer, font36, is_charging ? "Charging..." : "Charged", 6,42, WHITE_COLOR);
+			Font_shadowText(app.renderer, font36, is_charging && battery<100 ? "Charging..." : "Fully charged", 6,42, WHITE_COLOR);
 
 			App_battery(battery,is_charging,1);
+			
+			int x = 116;
+			int y = 526;
+			Font_shadowText(app.renderer, font24, "Press Power", x,y, WHITE_COLOR); y += 28;
+			Font_renderText(app.renderer, font18, "again to play", x,y, LIGHT_COLOR); y += 44;
+
+			Font_shadowText(app.renderer, font24, "Hold Power", x,y, WHITE_COLOR); y += 28;
+			Font_renderText(app.renderer, font18, "to shut down", x,y, LIGHT_COLOR); y += 24;
+			Font_renderText(app.renderer, font18, "and continue", x,y, LIGHT_COLOR); y += 24;
+			Font_renderText(app.renderer, font18, "charging", x,y, LIGHT_COLOR);
 			
 			// volume/brightness osd
 			if (app.osd==OSD_VOLUME) App_OSD("VOLUME", settings.volume, 20);
@@ -2302,6 +2400,8 @@ static void App_batmon(void) {
 			
 			// flip
 			real_SDL_RenderPresent(app.renderer);
+			
+			if (app.capture) App_capture("/tmp/capture.bmp");
 		}
 		else {
 			real_SDL_Delay(16);
@@ -2309,6 +2409,7 @@ static void App_batmon(void) {
 	}
 	
 	putString(CPU_PATH "scaling_setspeed", FREQ_GAME);
+	SDL_Log("exit batmon");
 }
 
 // --------------------------------------------
@@ -2452,6 +2553,8 @@ void SDL_RenderPresent(SDL_Renderer * renderer) {
 		else if (app.osd==OSD_BRIGHTNESS) App_OSD("BRIGHTNESS", settings.brightness, 10);
 	} 
 	real_SDL_RenderPresent(renderer);
+	
+	if (app.capture) App_capture("/tmp/capture.bmp");
 
 	if (osd_at+1000<SDL_GetTicks()) app.osd = OSD_NONE;
 }
@@ -2536,7 +2639,6 @@ int puts (const char *msg) {
 	snprintf(tick_msg, sizeof tick_msg, "[%i] %s", SDL_GetTicks(), msg);
 	return real_puts(tick_msg);
 }
-
 
 __attribute__((noreturn))
 void exit(int status) {

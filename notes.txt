@@ -1,35 +1,25 @@
-- nix batmon?
-	what if batmon was just a state of libhookdrastic it booted into when connected to power?
-	messy because we'd have to let drastic init SDL/window/renderer
-	but cleaner because we'd get osd + battery reading for free (mostly)
+- restructure, eg.
+	dedicated-zero40
+		source
+			hangmon
+			libhookdrastic
+			pp
+		skeleton
+	
+- main-zero40-<date>.img.zip is a release
+	/proc/config.gz
+	/usr/magicx/tina_config.gz
 
-- enable L stick
+- can I differentiate between DC and OTG ports
+	DC auto-powers on, that should enter batmon
+	but otherwise we must have been manually powered on and should launch directly into the game
+	yes
+		cat /sys/class/android_usb/android0/state == CONNECTED or CONFIGURED when connected to the OTG port but not the DC port
+	no, seems inconsistent
 
 - change ARCHIVE to HIDE or SHOW based on item->hidden?
 	- so it better matches verb-iness of other menu items
 - bump some of the font tile sizes to accomodate the /, %, and & characters
-- suddenly getting audio crackle in temple of trials in ni no kuni?! :disappointed:
-	- just had to save in-game and reset, must be the game's audio engine not liking being run for over six hours straight
-
-- implement archive
-	- reconsider design
-		- bump 16 to 24 (or maybe even a new 20?)
-		- implement Font_truncateText()
-			- get width of "..."
-			- get width of text
-			- subtract text - "..." and divide by two
-			- get front half of string within halfwidth
-			- get back half of string within halfwidth
-			- draw front "..." back
-	- entering the archive may change app.items
-		- including unloading the currently playing game
-	- archive shares half the screen rendering logic with menu
-	- build array from app.items + files in archive
-		- array will need to be a struct with file name and shown
-		- then on back out check if any hidden file is currently in games and move to archive and vice versa
-		- rebuild app.items
-		- if current game has been archived load the next game
-		- handle no games by kicking back into archive view?
 
 - get assets into repo
 
@@ -47,12 +37,9 @@
 - start breaking common utils (constants, init, drawing, settings, utils) into header only includes
 - cache more menu bits?
 	to reduce memory churn
-- show game screens beneath goodbye message?
-- an archive, library, or backlog for games on device that shouldn't appear in the switcher
-	I think "library" is the most neutral
 
-BUGS
-- in_drastic_menu doesn't work anymore
+KNOWN ISSUES
+- in_drastic_menu doesn't work anymore (so what)
 
 -----------------------------------------------
 

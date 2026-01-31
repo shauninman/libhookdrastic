@@ -1,10 +1,6 @@
-- restructure, eg.
-	dedicated-zero40
-		source
-			hangmon
-			libhookdrastic
-			pp
-		skeleton
+- build script needs to 
+	- remove elf extension
+	- remove .keep files
 
 - main-zero40-<date>.img.zip is a release
 	/proc/config.gz

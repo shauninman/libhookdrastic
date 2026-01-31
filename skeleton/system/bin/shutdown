@@ -1,0 +1,37 @@
+#!/bin/sh
+
+# copy to /tmp before running
+case "$0" in
+  /tmp/*)
+    # already running from /tmp, just continue
+    ;;
+  *)
+    TMP_COPY="/tmp/$(basename "$0")"
+    cp "$0" "$TMP_COPY"
+    chmod +x "$TMP_COPY"
+    exec "$TMP_COPY" "$@"
+    ;;
+esac
+
+sync && umount -f -l /mnt/SDCARD
+
+# execute poweroff
+AXP=/sys/class/axp/axp_reg
+
+# mask interrupts
+for REG in 0x40 0x41 0x42 0x43 0x44; do
+	echo ${REG}00 > $AXP
+done
+
+# clear irq status
+for REG in 0x48 0x49 0x4A 0x4B 0x4C; do
+	echo ${REG}00 > $AXP
+done
+
+# configure shutdown sources
+echo 0x220A > $AXP
+sleep 0.05
+
+# trigger poweroff
+echo 0x2701 > $AXP
+sleep 1

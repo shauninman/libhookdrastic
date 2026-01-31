@@ -1,0 +1,31 @@
+#!/bin/sh
+
+# convert bootlogo.png -define bmp:format=bmp3 -depth 8 -channel BGRA BMP3:bootlogo.bmp
+
+BOOT_DEV=/dev/mmcblk0p1
+BOOT_PATH=/mnt/boot
+BOOT_LOGO=/mnt/SDCARD/bootlogo.bmp
+BOOT_LAST=/mnt/SDCARD/userdata/bootlogo.txt
+
+[ ! -f $BOOT_LOGO ] && exit
+
+NEW_SUM=$(md5sum $BOOT_LOGO | awk '{print $1}')
+OLD_SUM=$(cat $BOOT_LAST 2>/dev/null || true)
+
+[ $NEW_SUM = $OLD_SUM ] && exit
+
+mkdir -p $BOOT_PATH
+mount -t vfat $BOOT_DEV $BOOT_PATH
+
+cp $BOOT_LOGO $BOOT_PATH
+sync
+
+umount $BOOT_PATH
+rm -rf $BOOT_PATH
+
+echo $NEW_SUM > $BOOT_LAST
+sync
+
+reboot
+sleep 60
+

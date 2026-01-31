@@ -5,10 +5,25 @@
 			libhookdrastic
 			pp
 		skeleton
-	
+
 - main-zero40-<date>.img.zip is a release
 	/proc/config.gz
 	/usr/magicx/tina_config.gz
+
+- figure out how rtc works (no games I play require this but the "mah pokemans!" crowd will flip)
+	drastic appears to use the system time
+		Clubhouse Games shows current time
+		what happens if I change it while it's running?
+	device RTC
+		read
+			date
+			hwclock
+		write
+			date -s "2026-01-31 12:30:00"
+			hwclock -w
+
+- expose setting time?
+	SELECT in menu?
 
 - can I differentiate between DC and OTG ports
 	DC auto-powers on, that should enter batmon

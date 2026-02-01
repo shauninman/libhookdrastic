@@ -2337,10 +2337,12 @@ static void App_batmon(void) {
 		}
 		
 		if (!wake && SDL_GetTicks()-input_down_at>=BATMON_TIMEOUT) {
-			asleep = 1;
-			raw_bri(0);
-			putInt("/sys/class/graphics/fb0/blank", 4);
-			Device_setLED(1);
+			if (!asleep) {
+				asleep = 1;
+				raw_bri(0);
+				putInt("/sys/class/graphics/fb0/blank", 4);
+				Device_setLED(1);
+			}
 		}
 
 		if (wake) {

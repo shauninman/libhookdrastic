@@ -1920,14 +1920,10 @@ static void App_menu(void) {
 			// LOG_event(&event);
 			int btn = event.jbutton.button;
 			
-			if (btn==JOY_L2 || btn==JOY_R2) dirty = 1;
-
-			if (btn==JOY_PLUS || btn==JOY_MINUS) dirty = 1;
-			if (btn==JOY_L1 || btn==JOY_R1) dirty = 1;
-			
-			if (btn==JOY_SELECT) dirty = 1;
-			
-			if (Device_handleEvent(&event)) continue;
+			if (Device_handleEvent(&event)) {
+				dirty = 1;
+				continue;
+			}
 			
 			if (event.type==SDL_JOYBUTTONDOWN) {
 				menu_at = SDL_GetTicks();
@@ -2288,14 +2284,10 @@ static void App_batmon(void) {
 		while (app.batmon && Repeater_pollEvent(&event)) {
 			int btn = event.jbutton.button;
 			
-			if (btn==JOY_L2 || btn==JOY_R2) dirty = 1;
-
-			if (btn==JOY_PLUS || btn==JOY_MINUS) dirty = 1;
-			if (btn==JOY_L1 || btn==JOY_R1) dirty = 1;
-			
-			if (btn==JOY_SELECT) dirty = 1;
-			
-			if (Device_handleEvent(&event)) continue;			
+			if (Device_handleEvent(&event)) {
+				dirty = 1;
+				continue;
+			}	
 
 			if (power_at && SDL_GetTicks()-power_at>=POWER_TIMEOUT) {
 				power_off = 1;

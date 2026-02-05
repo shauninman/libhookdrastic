@@ -117,7 +117,7 @@ static struct {
 	SDL_Texture* screens[SCREEN_COUNT];
 	SDL_Texture* preview[SCREEN_COUNT];
 	SDL_Texture* overlay;
-	SDL_Texture* eye;
+	SDL_Texture* icons;
 	SDL_Texture* bg;
 	SDL_Rect rects[SCREEN_COUNT];
 	
@@ -1551,7 +1551,7 @@ static void App_quit(void) {
 	free(app.items);
 	
 	if (app.bg) SDL_DestroyTexture(app.bg);
-	if (app.eye) SDL_DestroyTexture(app.eye);
+	if (app.icons) SDL_DestroyTexture(app.icons);
 	if (app.overlay) SDL_DestroyTexture(app.overlay);
 	if (app.preview[0]) SDL_DestroyTexture(app.preview[0]);
 	if (app.preview[1]) SDL_DestroyTexture(app.preview[1]);
@@ -1888,8 +1888,8 @@ static void App_menu(void) {
 		app.preview[1] = SDL_CreateTexture(app.renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, DS_WIDTH,DS_HEIGHT);
 	}
 	
-	if (!app.eye) {
-		app.eye = IMG_LoadTexture(app.renderer, ASSETS_PATH "/icon-eye.png");
+	if (!app.icons) {
+		app.icons = IMG_LoadTexture(app.renderer, ASSETS_PATH "/icons.png");
 	}
 	
 	char* save_items[] = {
@@ -2224,7 +2224,7 @@ static void App_menu(void) {
 					App_getDisplayName(item->name, name);
 					App_trunc(font18, name, 440, fit);
 					
-					real_SDL_RenderCopy(app.renderer, app.eye, &(SDL_Rect){item->hidden?24:0,0,24,24}, &(SDL_Rect){x+4,oy+4,24,24});
+					real_SDL_RenderCopy(app.renderer, app.icons, &(SDL_Rect){item->hidden?24:0,0,24,24}, &(SDL_Rect){x+4,oy+4,24,24});
 					Font_renderText(app.renderer, font18, fit,	x+32,oy+9, c);
 				}
 			}
@@ -2550,7 +2550,13 @@ void SDL_RenderPresent(SDL_Renderer * renderer) {
 		
 		if (app.osd==OSD_VOLUME) App_OSD("VOLUME", settings.volume, 20);
 		else if (app.osd==OSD_BRIGHTNESS) App_OSD("BRIGHTNESS", settings.brightness, 10);
+		
+		if (app.fast_forward) {
+			if (!app.icons) app.icons = IMG_LoadTexture(app.renderer, ASSETS_PATH "/icons.png");
+			real_SDL_RenderCopy(app.renderer, app.icons, &(SDL_Rect){48,0,24,24}, &(SDL_Rect){4,4,24,24});
+		}
 	} 
+	
 	real_SDL_RenderPresent(renderer);
 	
 	if (app.capture) App_capture("/tmp/capture.bmp");

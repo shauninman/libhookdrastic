@@ -1,6 +1,3 @@
-- make toolchain public (I think I accidentally created it private?)
-- fast foward icon
-
 - updater
 	package system as system.zip
 	check for system.zip in main.sh, unzip and delete if it exists

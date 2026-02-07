@@ -8,6 +8,7 @@ if [ -f /mnt/SDCARD/system.zip ]; then
 	cd /mnt/SDCARD/
 	rm -rf system
 	unzip -q system.zip
+	rm -f system.zip
 fi
 
 # loop

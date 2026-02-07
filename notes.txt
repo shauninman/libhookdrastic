@@ -1,10 +1,7 @@
 - updater
-	package system as system.zip
-	check for system.zip in main.sh, unzip and delete if it exists
-	maybe main.sh just becomes an updater and we move its logic into system so it gets updated with updates
-		system/loop.sh
-		system/run.sh (was launch.sh?)
-
+	copy over system.zip (and if updating from the very first release, main.sh)
+	that's it
+	
 - make sure we're creating folders before they're required
 
 - figure out how rtc works (no games I play require this but the "mah pokemans!" crowd will flip)

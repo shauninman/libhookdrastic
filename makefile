@@ -32,6 +32,7 @@ package:
 	cp source/libhookdrastic/libhookdrastic.so ./build/system/lib/
 	cd ./build/system && echo "$(RELEASE_NAME)\n$(BUILD_HASH)" > version.txt
 	cd ./build && find . -type f -name '.DS_Store' -delete
+	cd ./build && zip -r system.zip system && rm -rf system
 	cd ./build && zip -r ../releases/$(RELEASE_NAME).zip .
 
 done:
